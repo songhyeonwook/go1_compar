@@ -1,0 +1,25 @@
+# training / eval artifacts (regenerated on the server)
+scripts/rsl_rl/logs/
+scripts/rsl_rl/biomech/
+scripts/rsl_rl/pd_logs/
+scripts/rsl_rl/outputs/
+baselines/*.log
+baselines/compare_result.txt
+*.npz
+*.pt
+*.onnx
+*.jit
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg-link
+build/
+dist/
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp

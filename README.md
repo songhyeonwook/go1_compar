@@ -62,7 +62,6 @@ baselines/               실행 스크립트 (모두 portable: systemd 없이 fo
   run_baselines.sh       [baseline] 3개 패러다임 학습 → 자동 평가·비교 (detached)
   eval_compar.sh         [baseline] 3 패러다임 저속평가 → biomech 덤프 → 비교표
   compare_3paradigm.py   direction/GRF/SI 비교표
-METRICS.md               논문 보고 지표 정리
 ```
 
 ## 설정 (서버)
@@ -103,4 +102,4 @@ nohup ./run_baselines.sh 42 > run42.log 2>&1 &
 - **symmetry 가중치 −2.0은 시작값** — 대칭이 실제로 강제되도록 −1~−5 조정 확인 권장.
 - 학습/평가 산출물은 `scripts/rsl_rl/logs`·`scripts/rsl_rl/biomech` 에 저장(gitignore).
 
-지표·통계는 `METRICS.md` 참조.
+지표·통계는 `baselines/compare_3paradigm.py` 출력 참조.

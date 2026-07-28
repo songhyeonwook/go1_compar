@@ -3,7 +3,8 @@
 # This is the faithful phase1->phase2 curriculum (paper Section 4.6): a clean walking
 # policy is loaded, then the functional-splint injury and the nociceptor pain penalty
 # (eq. 4) are added on top so an antalgic, partially-loaded gait emerges from a
-# physiological baseline instead of a degenerate from-scratch one.
+# physiological baseline: the injury and the pain are layered onto an established
+# walking gait rather than being learned simultaneously with locomotion itself.
 #
 # gait_tuning=1 keeps the gait clean (anti-buzz, symmetry-neutral); moderate viability
 # floor keeps the injured limb bearing partial load (avoids both non-use and over-use).

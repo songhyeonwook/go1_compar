@@ -6,8 +6,9 @@
 #   faulttol : no pain, alive bonus only        GO1_PAIN_WEIGHT=0      SYM=0
 #   symmetry : no pain, mirror-symmetry penalty GO1_PAIN_WEIGHT=0      SYM=-2.0
 # Warm-starting all three from the same symmetric healthy gait is a CONSERVATIVE test
-# for antalgia (it must break symmetry to off-load), and yields clean physiological
-# gaits for all (unlike from-scratch, which degenerates to bounding/non-use).
+# for antalgia: the policy must actively break the symmetry it inherited in order to
+# off-load the impaired limb, and every paradigm starts from the same physiological
+# baseline rather than from three unrelated random inits.
 #
 # Self-contained / portable. Activate your Isaac Lab python env BEFORE running.
 # Usage: ./launch_warmstart_compar.sh <antalgic|faulttol|symmetry> <SEED> [PHASE1_CKPT]

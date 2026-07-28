@@ -61,9 +61,9 @@ MAX_ITER="${PHASE2_MAX_ITER:-6000}"
 SEED="${SEED:-42}"
 
 # --- warm-start --------------------------------------------------------------
-# GO1_NO_WARMSTART=1 trains FROM SCRATCH, so an asymmetric injured gait can
-# emerge instead of being trapped in the symmetric-trot basin of a healthy
-# warm-start. Otherwise PHASE1_CKPT must point at the Phase 1 checkpoint
+# GO1_NO_WARMSTART=1 trains from scratch; this is how Phase 1 is trained, since
+# there is nothing to inherit from yet. Every Phase 2 run instead warm-starts,
+# so PHASE1_CKPT must point at the Phase 1 checkpoint
 # (baselines/launch_warmstart_*.sh resolve it, defaulting to models/).
 PHASE1_CKPT="${PHASE1_CKPT:-}"
 if [ "${GO1_NO_WARMSTART:-0}" = "1" ]; then

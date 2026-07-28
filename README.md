@@ -8,11 +8,12 @@
 
 ## Phase 1 → Phase 2 warm-start 파이프라인 (gait-faithful)
 
-**배경**: from-scratch로 phase2를 학습하면 고주파(12–17 Hz) **바운딩**이나 부상다리
-**비사용(non-use)** 같은 비생리적 gait로 붕괴한다. 정상 보행(phase1)을 먼저 학습하고
-warm-start로 이어받으면, 걷는 습관이 유지된 채 통각이 하중만 줄여 **부분하중 antalgic
-gait**가 나온다. 핵심은 `GO1_PHASE2_GAIT_TUNING=1`(대칭 강요 없는 anti-buzz 정규화)로
-버즈를 막고, 중간 세기의 viability floor로 부상다리를 gait에 붙잡는 것.
+**설계**: 부상 보행은 정상 보행 위에 얹히는 것이라는 관찰을 그대로 학습 절차로 옮긴다.
+먼저 정상 보행(phase1)을 학습해 생리적 gait를 확보하고, 그 정책에서 warm-start해
+부상(기능적 부목)과 통각(eq.4)을 얹는다. 걷는 습관이 유지된 채 통각이 하중만 줄이므로
+**부분하중 antalgic gait**가 나온다. 보조 장치는 두 가지: `GO1_PHASE2_GAIT_TUNING=1`
+(대칭 강요 없는 anti-buzz 정규화)로 고주파 버즈를 막고, 중간 세기의 viability floor로
+부상다리를 gait에 붙잡아 완전 비사용(non-use)으로 도망가지 못하게 한다.
 
 ```bash
 cd baselines
@@ -79,10 +80,8 @@ models/phase1_mlp_s42/   번들된 clean phase1 체크포인트 (2.6Hz walk, war
 baselines/               실행 스크립트 (모두 portable: systemd 없이 foreground)
   launch_phase1.sh          [파이프라인] 정상보행 phase1 (teacher-MLP, warm-start 호환)
   launch_warmstart_phase2.sh[파이프라인] phase1→phase2 warm-start + 부상 + 통각
-  launch_warmstart_compar.sh[baseline★] 3패러다임을 **같은 phase1에서 warm-start** (권장)
-  launch_compar.sh       [baseline] 한 패러다임 teacher 1개 학습 (from-scratch, 구버전)
-  run_baselines.sh       [baseline] 3개 패러다임 학습 → 자동 평가·비교 (detached).
-                         기본 launcher = launch_warmstart_compar.sh
+  launch_warmstart_compar.sh[baseline] 패러다임 1개 학습 (3개 모두 같은 phase1에서 warm-start)
+  run_baselines.sh       [baseline] 3개 패러다임 학습 → 자동 평가·비교 (detached)
   run_nseed_compar.sh    [baseline] 위를 n-seed로 반복 → 패러다임별 mean±SD·95% CI
   eval_compar.sh         [baseline] 3 패러다임 저속평가 → biomech 덤프 → 비교표
   compare_3paradigm.py   direction/GRF/SI 비교표
@@ -120,9 +119,6 @@ nohup ./run_nseed_compar.sh "42 43 44 45 46" > nseed.log 2>&1 &
 옵션: `PARALLEL=1 ./run_baselines.sh 42` (작은 GPU에서 순차 실행),
 `NUM_ENVS=1024 ...`, `PHASE2_MAX_ITER=12000 ...`.
 
-from-scratch(구버전) 비교로 되돌리려면:
-`LAUNCHER=launch_compar.sh RUN_PREFIX=phase2_cmp ./run_baselines.sh 42`
-
 ## 설계 노트 (검토 요망)
 
 - **viability floor를 3개 모두에 포함** → 모든 패러다임이 환부를 "사용"하므로
@@ -130,8 +126,6 @@ from-scratch(구버전) 비교로 되돌리려면:
 - **n-seed는 phase1을 공유한다** — 모든 seed가 번들 `models/phase1_mlp_s42` 에서
   warm-start하므로 mean±SD는 phase2 분산만 잡는다. phase1 분산까지 포함하려면
   seed별로 `launch_phase1.sh <seed>` 를 돌리고 그 경로를 명시적으로 넘겨야 한다.
-- **warm-start(12k iter)와 from-scratch(18k iter)는 iteration 예산이 다르다** — 각
-  모드 안에서 3패러다임은 맞춰져 있으나, 두 결과를 나란히 실으려면 예산을 통일할 것.
 - **symmetry 가중치 −2.0은 시작값** — 대칭이 실제로 강제되도록 −1~−5 조정 확인 권장.
 - 학습/평가 산출물은 `scripts/rsl_rl/logs`·`scripts/rsl_rl/biomech` 에 저장(gitignore).
 

@@ -2,9 +2,7 @@
 # Evaluate the 3 paradigms (antalgic/faulttol/symmetry) at low speed (straight)
 # and print the comparison table. Self-contained / portable.
 #
-# Finds whichever run exists, preferring the recommended warm-start comparison
-# (phase2_ws_*, from launch_warmstart_compar.sh) over the older from-scratch one
-# (phase2_cmp_*, from launch_compar.sh). Force one with RUN_PREFIX=phase2_cmp.
+# Reads the runs produced by launch_warmstart_compar.sh (phase2_ws_<paradigm>_s<seed>).
 #
 # Usage: ./eval_compar.sh [SEED]   (default 42)
 set -uo pipefail
@@ -16,19 +14,12 @@ OUT="$BASE_DIR/compare_result.txt"; : > "$OUT"
 cd "$SCRIPTS"
 
 latest () { ls "$1"/model_*.pt 2>/dev/null | awk -F'[_/.]' '{print $(NF-1)"\t"$0}' | sort -n | tail -1 | cut -f2-; }
-find_run () {  # $1=paradigm $2=seed -> newest matching run dir, ws preferred
-  for pre in ${RUN_PREFIX:-phase2_ws phase2_cmp}; do
-    d=$(ls -dt logs/rsl_rl/unitree_go1_rough_teacher/*${pre}_${1}_s${2} 2>/dev/null | head -1)
-    [ -n "$d" ] && { echo "$d"; return; }
-  done
-}
 
 ARGS=()
 for P in antalgic faulttol symmetry; do
-  run=$(find_run "$P" "$S")
+  run=$(ls -dt logs/rsl_rl/unitree_go1_rough_teacher/*phase2_ws_${P}_s${S} 2>/dev/null | head -1)
   ck=$([ -n "$run" ] && latest "$run")
-  hint=$([ "${RUN_PREFIX:-}" = "phase2_cmp" ] && echo launch_compar.sh || echo launch_warmstart_compar.sh)
-  [ -z "$ck" ] && { echo "$P: no checkpoint (train it first: ./$hint $P $S)" >> "$OUT"; continue; }
+  [ -z "$ck" ] && { echo "$P: no checkpoint (train it first: ./launch_warmstart_compar.sh $P $S)" >> "$OUT"; continue; }
   echo "$P: $(basename "$run")/$(basename "$ck")" >> "$OUT"
   rm -f "biomech/cmp_$P.npz"
   GO1_INJURY_ONEHOT=1 GO1_PROPRIO_ONLY=1 GO1_FLAT_TERRAIN=1 GO1_PEG_WEAKEN_JOINTS=hip \

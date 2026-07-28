@@ -16,16 +16,9 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "$SCRIPT_DIR/train.py" ]; then
-    TRAIN_DIR="$SCRIPT_DIR"
-else
-    TRAIN_DIR="$SCRIPT_DIR/scripts/rsl_rl"
-fi
+TRAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 TASK="${TASK:-Template-Go1-Lab-v0}"
-PHASE1_EXP_NAME="${PHASE1_EXP_NAME:-unitree_go1_rough_healthy}"
-PHASE1_RUN_NAME="${PHASE1_RUN_NAME:-phase1_go1_default_baseline}"
 EXP_NAME="${EXP_NAME:-unitree_go1_rough_teacher}"
 RUN_NAME="${PHASE2_RUN_NAME:-phase2_teacher_antalgic_v1}"
 NUM_ENVS="${NUM_ENVS:-8192}"
@@ -35,54 +28,23 @@ PHASE1_CKPT="${PHASE1_CKPT:-}"
 
 cd "$TRAIN_DIR"
 
-if [ -z "$PHASE1_CKPT" ]; then
-    PHASE1_EXP_CANDIDATES=("$PHASE1_EXP_NAME")
-    if [ "$PHASE1_EXP_NAME" != "unitree_go1_rough_healthy" ]; then
-        PHASE1_EXP_CANDIDATES+=("unitree_go1_rough_healthy")
-    fi
-
-    LATEST_PHASE1_RUN=""
-    SEARCHED_PHASE1_ROOTS=()
-    for PHASE1_EXP_CANDIDATE in "${PHASE1_EXP_CANDIDATES[@]}"; do
-        PHASE1_ROOT="$TRAIN_DIR/logs/rsl_rl/$PHASE1_EXP_CANDIDATE"
-        SEARCHED_PHASE1_ROOTS+=("$PHASE1_ROOT")
-        if [ ! -d "$PHASE1_ROOT" ]; then
-            continue
-        fi
-        LATEST_PHASE1_RUN="$(find "$PHASE1_ROOT" -maxdepth 1 -type d -name "*_${PHASE1_RUN_NAME}" | sort | tail -n 1 || true)"
-        if [ -n "$LATEST_PHASE1_RUN" ]; then
-            break
-        fi
-    done
-
-    if [ -z "$LATEST_PHASE1_RUN" ]; then
-        echo "ERROR: Phase 1 run not found."
-        echo "       searched roots:"
-        printf '       - %s\n' "${SEARCHED_PHASE1_ROOTS[@]}"
-        echo "       expected suffix: $PHASE1_RUN_NAME"
-        echo "       override with: PHASE1_CKPT=/path/to/model_N.pt ./train_phase2.sh"
-        exit 1
-    fi
-
-    PHASE1_CKPT="$(
-        find "$LATEST_PHASE1_RUN" -maxdepth 1 -type f -name 'model_*.pt' \
-            | awk -F'[_/.]' '{ print $(NF-1) "\t" $0 }' \
-            | sort -n \
-            | tail -n 1 \
-            | cut -f2-
-    )"
-fi
-
 # GO1_NO_WARMSTART=1 → train the teacher FROM SCRATCH (no healthy warmstart), so a
 # broken-trot / asymmetric injured gait can EMERGE instead of being trapped in the
 # symmetric-trot basin of a healthy warmstart (needed for rear-leg gait emergence).
-WS_ARGS=(--warmstart_ckpt_path "$PHASE1_CKPT")
+# Otherwise PHASE1_CKPT must name the Phase 1 checkpoint to warm-start from
+# (launch_warmstart_phase2.sh resolves it).
 if [ "${GO1_NO_WARMSTART:-0}" = "1" ]; then
     WS_ARGS=()
     PHASE1_CKPT="(none: from scratch)"
+elif [ -z "$PHASE1_CKPT" ]; then
+    echo "ERROR: warm-start requested but PHASE1_CKPT is empty."
+    echo "       set PHASE1_CKPT=/path/to/model_N.pt, or GO1_NO_WARMSTART=1 to train from scratch."
+    exit 1
 elif [ ! -f "$PHASE1_CKPT" ]; then
     echo "ERROR: Phase 1 checkpoint not found: $PHASE1_CKPT"
     exit 1
+else
+    WS_ARGS=(--warmstart_ckpt_path "$PHASE1_CKPT")
 fi
 
 echo "-----------------------------------------------"

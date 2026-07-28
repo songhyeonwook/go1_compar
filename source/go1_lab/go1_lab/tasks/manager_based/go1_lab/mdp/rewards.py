@@ -721,6 +721,7 @@ def penalty_pain(
     threshold_mild_multiplier: float = 1.15,
     scale_severe_multiplier: float = 1.25,
     scale_mild_multiplier: float = 0.85,
+    pain_form: str = "exp",
 ) -> torch.Tensor:
     """Nociceptor-inspired pain penalty — implements paper equation (4).
 
@@ -845,8 +846,19 @@ def penalty_pain(
             penalty[mask] += load_cost_t * is_load_contact
 
         overload = torch.clamp(leg_force - threshold_t - float(overload_tolerance), min=0.0)
-        exp_arg = torch.clamp(scale_t * overload, min=0.0, max=float(max_exp_argument))
-        penalty[mask] += torch.clamp(torch.expm1(exp_arg), max=float(max_penalty))
+        # Supra-threshold penalty form. "exp" = paper eq.4 (nociceptor). "quadratic"
+        # and "linear" are NON-nociceptive controls (paper §2.8 ablation / the C5
+        # magnitude-matched control): same threshold/limb, different F-dependence, so
+        # off-loading magnitude can be matched while the F-shape differs. Coefficient
+        # is scale_t (GO1_PAIN_SCALE), overall size via GO1_PAIN_WEIGHT.
+        _form = str(pain_form).strip().lower()
+        if _form == "quadratic":
+            penalty[mask] += torch.clamp(scale_t * overload * overload, max=float(max_penalty))
+        elif _form == "linear":
+            penalty[mask] += torch.clamp(scale_t * overload, max=float(max_penalty))
+        else:  # "exp" — paper eq.4
+            exp_arg = torch.clamp(scale_t * overload, min=0.0, max=float(max_exp_argument))
+            penalty[mask] += torch.clamp(torch.expm1(exp_arg), max=float(max_penalty))
 
     return penalty
 

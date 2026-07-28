@@ -24,7 +24,8 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-export PHASE1_CKPT="${PHASE1_CKPT:-$SCRIPT_DIR/logs/rsl_rl/unitree_go1_rough_healthy/2026-06-16_12-51-52_faithful_p1_s1/model_3999.pt}"
+# PHASE1_CKPT is supplied by the caller (launch_warmstart_phase2.sh) and inherited
+# through exec; from-scratch callers set GO1_NO_WARMSTART=1 instead.
 
 # proprio R48 + flat terrain + domain randomisation (paper §4.3/4.8)
 export GO1_PROPRIO_ONLY=1
@@ -35,8 +36,8 @@ export AGENT="${AGENT:-rsl_rl_teacher_mlp_cfg_entry_point}"
 
 # pain eq.4 (fixed) + tight cap
 export GO1_PAIN_WEIGHT="${GO1_PAIN_WEIGHT:--0.10}"
-export GO1_PAIN_MAX_PENALTY=200
-export GO1_PAIN_MAX_EXP_ARGUMENT=10
+export GO1_PAIN_MAX_PENALTY="${GO1_PAIN_MAX_PENALTY:-200}"
+export GO1_PAIN_MAX_EXP_ARGUMENT="${GO1_PAIN_MAX_EXP_ARGUMENT:-10}"
 # energy (dof_torques_l2 = -0.006, matches v17)
 export GO1_TORQUE_PENALTY_SCALE="${GO1_TORQUE_PENALTY_SCALE:-30}"
 
@@ -44,8 +45,8 @@ export GO1_TORQUE_PENALTY_SCALE="${GO1_TORQUE_PENALTY_SCALE:-30}"
 export GO1_INJURED_FORCE_NONUSE_WEIGHT="${GO1_INJURED_FORCE_NONUSE_WEIGHT:--1.0}"
 export GO1_INJURED_MIN_FORCE_SEVERE_N="${GO1_INJURED_MIN_FORCE_SEVERE_N:-6.0}"
 export GO1_INJURED_MIN_FORCE_MILD_N="${GO1_INJURED_MIN_FORCE_MILD_N:-6.0}"
-export GO1_INJURED_NONUSE_EMA_ALPHA=0.90
-export GO1_INJURED_NONUSE_RAMP_STEPS=2000
+export GO1_INJURED_NONUSE_EMA_ALPHA="${GO1_INJURED_NONUSE_EMA_ALPHA:-0.90}"
+export GO1_INJURED_NONUSE_RAMP_STEPS="${GO1_INJURED_NONUSE_RAMP_STEPS:-2000}"
 
 # *** THE FIX: balance shaping ***
 export GO1_FLAT_ORIENTATION_WEIGHT="${GO1_FLAT_ORIENTATION_WEIGHT:--1.5}"

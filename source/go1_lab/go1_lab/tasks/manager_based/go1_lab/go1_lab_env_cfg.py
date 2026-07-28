@@ -704,6 +704,9 @@ class Go1LabEnvCfg(UnitreeGo1RoughEnvCfg):
                 "overload_tolerance": float(os.getenv("GO1_PAIN_OVERLOAD_TOLERANCE", "0.0")),
                 "max_exp_argument": float(os.getenv("GO1_PAIN_MAX_EXP_ARGUMENT", "6.0")),
                 "max_penalty": float(os.getenv("GO1_PAIN_MAX_PENALTY", "20.0")),
+                # eq.4 exponential (default) vs C5 non-nociceptive controls:
+                #   GO1_PAIN_FORM = exp | quadratic | linear
+                "pain_form": os.getenv("GO1_PAIN_FORM", "exp").strip().lower(),
                 "base_contact_cost": float(os.getenv("GO1_PAIN_BASE_CONTACT_COST", "2.0")),
                 "contact_detect_threshold": float(os.getenv("GO1_PAIN_CONTACT_THRESHOLD_N", "1.0")),
                 "load_contact_cost": float(os.getenv("GO1_PAIN_LOAD_CONTACT_COST", "0.0")),

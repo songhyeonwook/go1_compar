@@ -23,3 +23,7 @@ dist/
 .idea/
 .DS_Store
 *.swp
+
+# bundled phase1 warm-start checkpoint (small, needed on server)
+!models/
+!models/**

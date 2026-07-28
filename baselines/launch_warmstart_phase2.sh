@@ -20,14 +20,20 @@ BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS="$(cd "$BASE_DIR/.." && pwd)/scripts/rsl_rl"
 cd "$SCRIPTS"
 
+REPO="$(cd "$BASE_DIR/.." && pwd)"
 P1="${2:-}"
 if [ -z "$P1" ]; then
+  # 1) bundled phase1 checkpoint shipped with the repo (models/), used for all results
+  BUNDLED="$REPO/models/phase1_mlp_s42/model_5999.pt"
+  # 2) or a freshly-trained one from ./launch_phase1.sh (logs/)
   run=$(ls -dt logs/rsl_rl/unitree_go1_rough_teacher/*phase1_mlp_s${S} 2>/dev/null | head -1)
-  [ -n "$run" ] && P1=$(ls "$run"/model_*.pt 2>/dev/null | awk -F'[_/.]' '{print $(NF-1)"\t"$0}' | sort -n | tail -1 | cut -f2)
+  if [ -f "$BUNDLED" ]; then P1="$BUNDLED"
+  elif [ -n "$run" ]; then P1=$(ls "$run"/model_*.pt 2>/dev/null | awk -F'[_/.]' '{print $(NF-1)"\t"$0}' | sort -n | tail -1 | cut -f2); fi
 fi
 if [ -z "$P1" ] || [ ! -f "$P1" ]; then
-  echo "ERROR: Phase 1 checkpoint not found. Run ./launch_phase1.sh $S first, or pass the path:"
-  echo "       ./launch_warmstart_phase2.sh $S /path/to/phase1_mlp_s${S}/model_5999.pt"
+  echo "ERROR: Phase 1 checkpoint not found. Bundled model missing and none trained."
+  echo "       Run ./launch_phase1.sh $S first, or pass the path explicitly:"
+  echo "       ./launch_warmstart_phase2.sh $S /path/to/model_5999.pt"
   exit 1
 fi
 echo "[phase2-warmstart] seed=$S  warmstart from: $P1"

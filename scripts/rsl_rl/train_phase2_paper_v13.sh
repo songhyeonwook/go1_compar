@@ -67,16 +67,6 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# --- Resolve Phase 1 paper-grade warmstart checkpoint -----------------------
-EXP_HEALTHY="${PHASE1_EXP_NAME:-unitree_go1_rough_healthy}"
-P1_FILE="$SCRIPT_DIR/logs/rsl_rl/$EXP_HEALTHY/PAPER_GRADE_PHASE1_CHECKPOINT.txt"
-if [ -z "${PHASE1_CKPT:-}" ] && [ -f "$P1_FILE" ]; then
-    CAND="$(head -n 1 "$P1_FILE" | tr -d '[:space:]')"
-    if [ "$CAND" != "NO_PAPER_GRADE_CANDIDATE" ] && [ -n "$CAND" ] && [ -f "$CAND" ]; then
-        export PHASE1_CKPT="$CAND"
-    fi
-fi
-
 PHASE2_RUN_NAME="${PHASE2_RUN_NAME:-phase2_paper_v13}" \
 PHASE2_MAX_ITER="${PHASE2_MAX_ITER:-15000}" \
 NUM_ENVS="${NUM_ENVS:-8192}" \

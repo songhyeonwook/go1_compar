@@ -55,10 +55,13 @@ source/go1_lab/          Isaac Lab 확장 (환경 + 알고리즘 + Go1/pegleg US
 scripts/rsl_rl/          학습·평가 파이프라인 (train.py, train_phase2_stable.sh 체인,
                          analyze_student.py, biomech_analyze.py, extract_paper_metrics.py,
                          aggregate_nseed.py)
+models/phase1_mlp_s42/   번들된 clean phase1 체크포인트 (2.6Hz walk, warm-start 소스).
+                         서버에서 재학습 없이 바로 warm-start 가능 (git 추적됨).
 baselines/               실행 스크립트 (모두 portable: systemd 없이 foreground)
   launch_phase1.sh          [파이프라인] 정상보행 phase1 (teacher-MLP, warm-start 호환)
   launch_warmstart_phase2.sh[파이프라인] phase1→phase2 warm-start + 부상 + 통각
-  launch_compar.sh       [baseline] 한 패러다임 teacher 1개 학습 (from-scratch)
+  launch_warmstart_compar.sh[baseline★] 3패러다임을 **같은 phase1에서 warm-start** (권장)
+  launch_compar.sh       [baseline] 한 패러다임 teacher 1개 학습 (from-scratch, 구버전)
   run_baselines.sh       [baseline] 3개 패러다임 학습 → 자동 평가·비교 (detached)
   eval_compar.sh         [baseline] 3 패러다임 저속평가 → biomech 덤프 → 비교표
   compare_3paradigm.py   direction/GRF/SI 비교표

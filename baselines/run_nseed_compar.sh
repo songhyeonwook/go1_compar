@@ -4,6 +4,9 @@
 #
 #   nohup ./run_nseed_compar.sh "42 43 44 45 46" > nseed.log 2>&1 &
 #
+# Defaults to the recommended warm-start comparison (all paradigms from the same
+# phase1); set LAUNCHER=launch_compar.sh + RUN_PREFIX=phase2_cmp for from-scratch.
+#
 # Env: PARALLEL (concurrent trainings, default 3), PHASE2_MAX_ITER, NUM_ENVS.
 set -uo pipefail
 SEEDS="${1:-42 43 44 45 46}"
@@ -12,6 +15,8 @@ REPO="$(cd "$BASE_DIR/.." && pwd)"
 SCRIPTS="$REPO/scripts/rsl_rl"
 PARALLEL="${PARALLEL:-3}"
 PARADIGMS="antalgic faulttol symmetry"
+LAUNCHER="${LAUNCHER:-launch_warmstart_compar.sh}"
+RUN_PREFIX="${RUN_PREFIX:-phase2_ws}"
 cd "$SCRIPTS"
 latest () { ls "$1"/model_*.pt 2>/dev/null | awk -F'[_/.]' '{print $(NF-1)"\t"$0}' | sort -n | tail -1 | cut -f2-; }
 
@@ -19,7 +24,7 @@ latest () { ls "$1"/model_*.pt 2>/dev/null | awk -F'[_/.]' '{print $(NF-1)"\t"$0
 running=0
 for S in $SEEDS; do
   for P in $PARADIGMS; do
-    bash "$BASE_DIR/launch_compar.sh" "$P" "$S" > "$BASE_DIR/train_${P}_$S.log" 2>&1 &
+    bash "$BASE_DIR/$LAUNCHER" "$P" "$S" > "$BASE_DIR/train_${P}_$S.log" 2>&1 &
     running=$((running+1))
     [ "$running" -ge "$PARALLEL" ] && { wait -n 2>/dev/null || wait; running=$((running-1)); }
   done
@@ -30,7 +35,7 @@ echo "[nseed_compar] all trainings done"
 # ---- 2. evaluate every (paradigm, seed) ----
 for S in $SEEDS; do
   for P in $PARADIGMS; do
-    run=$(ls -dt logs/rsl_rl/unitree_go1_rough_teacher/*phase2_cmp_${P}_s${S} 2>/dev/null | head -1)
+    run=$(ls -dt logs/rsl_rl/unitree_go1_rough_teacher/*${RUN_PREFIX}_${P}_s${S} 2>/dev/null | head -1)
     ck=$([ -n "$run" ] && latest "$run"); [ -z "$ck" ] && continue
     rm -f "biomech/cmp_${P}_s${S}.npz"
     GO1_INJURY_ONEHOT=1 GO1_PROPRIO_ONLY=1 GO1_FLAT_TERRAIN=1 GO1_PEG_WEAKEN_JOINTS=hip \

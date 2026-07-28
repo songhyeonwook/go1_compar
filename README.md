@@ -52,9 +52,13 @@ randomization, 커리큘럼, load-bearing viability floor, 속도추종·에너�
 
 ```
 source/go1_lab/          Isaac Lab 확장 (환경 + 알고리즘 + Go1/pegleg USD)
-scripts/rsl_rl/          학습·평가 파이프라인 (train.py, train_phase2_stable.sh 체인,
-                         analyze_student.py, biomech_analyze.py, extract_paper_metrics.py,
-                         aggregate_nseed.py)
+scripts/rsl_rl/          학습·평가 파이프라인
+  train_phase2.sh          모든 학습의 단일 진입점. 모든 보상/부상/커리큘럼 기본값이
+                           `${VAR:-default}` 한 곳에 평평하게 모여 있고, baselines/의
+                           launcher가 환경변수로 덮어쓴다. (직접 실행하지 않음)
+  train.py                 Isaac Lab / rsl-rl 학습 스크립트
+  analyze_phase2_balanced.sh, analyze_student.py, biomech_analyze.py,
+  extract_paper_metrics.py, aggregate_nseed.py
 models/phase1_mlp_s42/   번들된 clean phase1 체크포인트 (2.6Hz walk, warm-start 소스).
                          서버에서 재학습 없이 바로 warm-start 가능 (git 추적됨).
 baselines/               실행 스크립트 (모두 portable: systemd 없이 foreground)
@@ -62,7 +66,9 @@ baselines/               실행 스크립트 (모두 portable: systemd 없이 fo
   launch_warmstart_phase2.sh[파이프라인] phase1→phase2 warm-start + 부상 + 통각
   launch_warmstart_compar.sh[baseline★] 3패러다임을 **같은 phase1에서 warm-start** (권장)
   launch_compar.sh       [baseline] 한 패러다임 teacher 1개 학습 (from-scratch, 구버전)
-  run_baselines.sh       [baseline] 3개 패러다임 학습 → 자동 평가·비교 (detached)
+  run_baselines.sh       [baseline] 3개 패러다임 학습 → 자동 평가·비교 (detached).
+                         기본 launcher = launch_warmstart_compar.sh
+  run_nseed_compar.sh    [baseline] 위를 n-seed로 반복 → 패러다임별 mean±SD·95% CI
   eval_compar.sh         [baseline] 3 패러다임 저속평가 → biomech 덤프 → 비교표
   compare_3paradigm.py   direction/GRF/SI 비교표
 ```
@@ -83,20 +89,24 @@ baselines/               실행 스크립트 (모두 portable: systemd 없이 fo
 cd baselines
 # 3개 패러다임 학습 + 자동 비교 (seed 42). detached 권장:
 nohup ./run_baselines.sh 42 > run42.log 2>&1 &
+#   → 번들 phase1(models/)에서 3개 모두 warm-start → phase2_ws_<paradigm>_s42
 #   → 완료 시 baselines/compare_result.txt 에 비교표
 
 # 개별 실행:
-./launch_compar.sh antalgic 42     # (foreground; nohup/tmux로 백그라운드)
-./launch_compar.sh faulttol 42
-./launch_compar.sh symmetry 42
-./eval_compar.sh 42                 # 학습 완료 후 평가+비교
+./launch_warmstart_compar.sh antalgic 42   # (foreground; nohup/tmux로 백그라운드)
+./launch_warmstart_compar.sh faulttol 42
+./launch_warmstart_compar.sh symmetry 42
+./eval_compar.sh 42                        # 학습 완료 후 평가+비교
 
-# n-seed 통계로 확장: seed 42,43,44,... 반복 후 패러다임별 mean±std 집계
-#   (scripts/rsl_rl/aggregate_nseed.py 방식)
+# n-seed 통계 (패러다임별 mean±SD, 95% CI):
+nohup ./run_nseed_compar.sh "42 43 44 45 46" > nseed.log 2>&1 &
 ```
 
 옵션: `PARALLEL=1 ./run_baselines.sh 42` (작은 GPU에서 순차 실행),
 `NUM_ENVS=1024 ...`, `PHASE2_MAX_ITER=12000 ...`.
+
+from-scratch(구버전) 비교로 되돌리려면:
+`LAUNCHER=launch_compar.sh RUN_PREFIX=phase2_cmp ./run_baselines.sh 42`
 
 ## 설계 노트 (검토 요망)
 

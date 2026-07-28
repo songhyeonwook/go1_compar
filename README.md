@@ -145,12 +145,6 @@ nohup ./run_nseed_compar.sh "42 43 44 45 46" > nseed.log 2>&1 &
 SPEEDS="0.0 0.25 0.5 0.75 1.0" ./eval_compar.sh 42
 ```
 
-> **⚠ 평가 속도는 학습 속도 범위 안이어야 한다.**
-> 현재 학습은 `GO1_CMD_VX_MIN=0.10 GO1_CMD_VX_MAX=0.30` 이다. 0.3 m/s를 넘는 평가는
-> 학습 분포 밖이라 외삽이며, 세 패러다임 모두 학습한 적 없는 영역에서 비교하는 셈이
-> 된다. 0~1 m/s로 평가하려면 `launch_phase1.sh` 와 `launch_warmstart_compar.sh` 의
-> `GO1_CMD_VX_MIN/MAX` 를 `0.0/1.0` 으로 넓혀 **phase1부터 다시 학습**해야 한다.
-
 ## 설계 노트 (검토 요망)
 
 - **viability floor를 3개 모두에 포함** → 모든 패러다임이 환부를 "사용"하므로

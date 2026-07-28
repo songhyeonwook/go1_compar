@@ -27,7 +27,8 @@ ARGS=()
 for P in antalgic faulttol symmetry; do
   run=$(find_run "$P" "$S")
   ck=$([ -n "$run" ] && latest "$run")
-  [ -z "$ck" ] && { echo "$P: no checkpoint (train it first: ./launch_warmstart_compar.sh $P $S)" >> "$OUT"; continue; }
+  hint=$([ "${RUN_PREFIX:-}" = "phase2_cmp" ] && echo launch_compar.sh || echo launch_warmstart_compar.sh)
+  [ -z "$ck" ] && { echo "$P: no checkpoint (train it first: ./$hint $P $S)" >> "$OUT"; continue; }
   echo "$P: $(basename "$run")/$(basename "$ck")" >> "$OUT"
   rm -f "biomech/cmp_$P.npz"
   GO1_INJURY_ONEHOT=1 GO1_PROPRIO_ONLY=1 GO1_FLAT_TERRAIN=1 GO1_PEG_WEAKEN_JOINTS=hip \

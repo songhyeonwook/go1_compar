@@ -16,18 +16,29 @@ gait**가 나온다. 핵심은 `GO1_PHASE2_GAIT_TUNING=1`(대칭 강요 없는 a
 
 ```bash
 cd baselines
-# 1) 정상 보행 phase1 (teacher-MLP, 부상·통증 없음) — warm-start 호환. ~2.6 Hz walk.
+# 1) (선택) 정상 보행 phase1 직접 학습 — 부상·통증 없음. ~2.6 Hz walk.
+#    번들 체크포인트(models/)가 있으면 2)가 이걸 쓰지 않는다. 아래 주의 참조.
 ./launch_phase1.sh 42                       # → logs/.../phase1_mlp_s42/model_5999.pt
 
 # 2) phase1에서 warm-start → 부상(기능적 부목)+통각(eq.4) 얹어 antalgic 학습
-./launch_warmstart_phase2.sh 42             # phase1 체크포인트 자동탐색
-#   또는 명시: ./launch_warmstart_phase2.sh 42 /path/to/phase1_mlp_s42/model_5999.pt
+./launch_warmstart_phase2.sh 42             # 기본: 번들 models/phase1_mlp_s42
+#   직접 학습한 걸 쓰려면 경로를 명시한다:
+./launch_warmstart_phase2.sh 42 ../scripts/rsl_rl/logs/rsl_rl/unitree_go1_rough_teacher/<run>/model_5999.pt
 
 # 3) 평가 (gait 주파수·부상다리 duty·GRF)
+PHASE2_RUN_NAME=phase2_warmstart_s42 \
 GO1_BIOMECH_DUMP=$PWD/../scripts/rsl_rl/biomech/ws.npz \
   ../scripts/rsl_rl/analyze_phase2_balanced.sh   # (AGENT=rsl_rl_teacher_mlp_cfg_entry_point)
 ```
 **판정 기준**: normal gait 2–3 Hz, 부상다리 duty 0.3–0.5(부분하중), 4다리 안정.
+
+> **⚠ warm-start 소스는 항상 번들 체크포인트다.**
+> `launch_warmstart_*.sh`는 `models/phase1_mlp_s42/model_5999.pt`가 존재하면 **seed와
+> 무관하게** 무조건 그것을 쓴다(경로를 인자로 넘기면 그게 우선). 따라서
+> `./launch_phase1.sh 43` 을 돌려도 `./launch_warmstart_phase2.sh 43` 은 그 결과가 아니라
+> seed-42 번들에서 출발한다. 의도된 통제(모든 결과가 동일한 초기 정책에서 시작)지만,
+> **n-seed 통계의 편차는 phase2 학습 분산만 반영하고 phase1 분산은 포함하지 않는다** —
+> 논문에 이 점을 명시할 것.
 
 ---
 
@@ -53,9 +64,13 @@ randomization, 커리큘럼, load-bearing viability floor, 속도추종·에너�
 ```
 source/go1_lab/          Isaac Lab 확장 (환경 + 알고리즘 + Go1/pegleg USD)
 scripts/rsl_rl/          학습·평가 파이프라인
-  train_phase2.sh          모든 학습의 단일 진입점. 모든 보상/부상/커리큘럼 기본값이
-                           `${VAR:-default}` 한 곳에 평평하게 모여 있고, baselines/의
+  train_phase2.sh          phase1·phase2 학습의 단일 진입점 (이름과 달리 phase1도 이걸로
+                           학습한다 — phase1 = 부상확률 0 · 통각 0인 특수 케이스).
+                           학습 로직은 없고, train.py 가 읽을 GO1_* 환경변수를
+                           `${VAR:-default}` 로 세팅할 뿐인 "bash로 쓴 설정 파일".
                            launcher가 환경변수로 덮어쓴다. (직접 실행하지 않음)
+                           소스 기본값과 같은 값은 중복 기재하지 않는다. 단 부상모델·
+                           커리큘럼·eq.3 가중치처럼 실험 설계를 드러내는 값은 남긴다.
   train.py                 Isaac Lab / rsl-rl 학습 스크립트
   analyze_phase2_balanced.sh, analyze_student.py, biomech_analyze.py,
   extract_paper_metrics.py, aggregate_nseed.py
@@ -112,6 +127,11 @@ from-scratch(구버전) 비교로 되돌리려면:
 
 - **viability floor를 3개 모두에 포함** → 모든 패러다임이 환부를 "사용"하므로
   use-vs-nonuse가 아니라 **보행 패턴**을 공정 비교. 논문에 이 결정 명시.
+- **n-seed는 phase1을 공유한다** — 모든 seed가 번들 `models/phase1_mlp_s42` 에서
+  warm-start하므로 mean±SD는 phase2 분산만 잡는다. phase1 분산까지 포함하려면
+  seed별로 `launch_phase1.sh <seed>` 를 돌리고 그 경로를 명시적으로 넘겨야 한다.
+- **warm-start(12k iter)와 from-scratch(18k iter)는 iteration 예산이 다르다** — 각
+  모드 안에서 3패러다임은 맞춰져 있으나, 두 결과를 나란히 실으려면 예산을 통일할 것.
 - **symmetry 가중치 −2.0은 시작값** — 대칭이 실제로 강제되도록 −1~−5 조정 확인 권장.
 - 학습/평가 산출물은 `scripts/rsl_rl/logs`·`scripts/rsl_rl/biomech` 에 저장(gitignore).
 

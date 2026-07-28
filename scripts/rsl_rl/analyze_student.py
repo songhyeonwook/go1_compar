@@ -126,8 +126,9 @@ if args_cli.balanced_envs:
 # Phase 자동 감지 → agent 기본값 결정
 _phase = os.getenv("GO1_PHASE", "healthy").strip().lower()
 _AGENT_DEFAULTS = {
-    "healthy": "rsl_rl_cfg_entry_point",
-    "teacher": "rsl_rl_teacher_cfg_entry_point",
+    # phase1 (healthy) and phase2 (teacher) train with the same MLP runner cfg
+    "healthy": "rsl_rl_teacher_mlp_cfg_entry_point",
+    "teacher": "rsl_rl_teacher_mlp_cfg_entry_point",
     "student": "rsl_rl_distill_cfg_entry_point",
 }
 if args_cli.agent is None:

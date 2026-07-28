@@ -51,10 +51,11 @@ from .mdp.events import (
 
 @configclass
 class Go1LabPrivilegedObsCfg(ObsGroup):
-    """Teacher 전용 privileged observation (2차원).
+    """Teacher 전용 privileged observation (기본 3차원, GO1_INJURY_ONEHOT=1 이면 7차원).
 
-    Student LSTM 출력 target:
+    Phase 3 distillation 에서 Student LSTM 이 추정할 target:
     [0] 부상 상태 index: 0=정상, 1=FL, 2=FR, 3=RL, 4=RR
+        (one-hot 모드에서는 [FL, FR, RL, RR, injured_flag] 5차원으로 대체)
     [1] 부목 등가 길이 (m): Go1 역기구학 기반
     [2] 발 마찰 계수
     """
@@ -72,10 +73,13 @@ class Go1LabPrivilegedObsCfg(ObsGroup):
 class Go1LabEnvCfg(UnitreeGo1RoughEnvCfg):
     """Go1 Lab 환경 설정.
 
-    3-phase 학습 파이프라인:
-      Phase 1 (GO1_PHASE=healthy): 정상 보행 pretrain
-      Phase 2 (GO1_PHASE=teacher): peg-leg 환경 + privileged obs → Teacher PPO
-      Phase 3 (GO1_PHASE=student): Teacher checkpoint 로드 → Student distill
+    GO1_PHASE 값에 따른 env 구성:
+      teacher: peg-leg 이벤트 + privileged obs + pain 등 부상 관련 항 등록.
+               학습 파이프라인의 Phase 1/2 는 모두 이 모드로 돕니다 — Phase 1
+               (launch_phase1.sh) 은 GO1_PROB_PEG_LEG=0, GO1_PAIN_WEIGHT=0 인
+               특수 케이스일 뿐, env 구조는 Phase 2 와 동일 (warm-start 호환).
+      student: teacher 와 동일한 env 에서 Phase 3 distillation 용.
+      healthy: 부상 관련 수정이 전혀 없는 순정 env (early return; 진단용).
     """
 
     def __post_init__(self):
@@ -163,9 +167,10 @@ class Go1LabEnvCfg(UnitreeGo1RoughEnvCfg):
                 self.scene.clone_in_fabric = False
 
         # ⚠️ history_length 은 모든 Phase에서 1로 유지합니다.
-        # LSTM policy 가 시계열 메모리를 담당하므로 입력 frame stacking 은 불필요합니다.
-        # 특히 Phase 3 Distillation 에서는 Teacher 가 H=1 로 학습된 체크포인트를
-        # 로드하는데, H>1 로 설정하면 Teacher LSTM 입력 차원이 달라져 로드 실패합니다.
+        # Teacher(MLP) 는 privileged obs 를 직접 관측하므로 frame stacking 이
+        # 불필요하고(RMA 구조), 시계열 메모리는 Phase 3 의 Student LSTM 담당입니다.
+        # 특히 distillation 은 H=1 로 학습된 Teacher 체크포인트를 로드하므로,
+        # H>1 로 바꾸면 Teacher 입력 차원이 달라져 로드에 실패합니다.
         self.observations.policy.history_length = 1
 
         # Proprioception-only policy observation (GO1_PROPRIO_ONLY=1). The paper
@@ -331,94 +336,11 @@ class Go1LabEnvCfg(UnitreeGo1RoughEnvCfg):
                 if getattr(_pol, _term, None) is not None:
                     getattr(_pol, _term).noise = GaussianNoiseCfg(mean=0.0, std=_std)
 
-        # Phase 1 paper baseline:
-        # 이후 Phase 2/3의 "Normal" 기준이 되는 보행이므로 좌우 force/duty 대칭을
-        # Phase 1부터 직접 맞춥니다. 완전히 순수한 Isaac Lab baseline이 필요하면
-        # GO1_PHASE1_BALANCE_REWARDS=0 으로 끌 수 있습니다.
-        use_phase1_balance_rewards = os.getenv("GO1_PHASE1_BALANCE_REWARDS", "1").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        if (not enable_peg_leg) and use_phase1_balance_rewards:
-            self.rewards.contact_force_asymmetry = RewTerm(
-                func=mdp.penalize_contact_force_asymmetry,
-                weight=float(os.getenv("GO1_CONTACT_FORCE_ASYM_WEIGHT", "-0.003")),
-                params={
-                    "ramp_start_steps": int(os.getenv("GO1_CONTACT_FORCE_ASYM_RAMP_START_STEPS", "2000")),
-                    "ramp_duration_steps": int(os.getenv("GO1_CONTACT_FORCE_ASYM_RAMP_STEPS", "6000")),
-                },
-            )
-            self.rewards.duty_factor_asymmetry = RewTerm(
-                func=mdp.penalize_duty_factor_asymmetry,
-                weight=float(os.getenv("GO1_DUTY_FACTOR_ASYM_WEIGHT", "-0.015")),
-                params={
-                    "contact_threshold": float(os.getenv("GO1_PAIN_CONTACT_THRESHOLD_N", "1.0")),
-                    "ramp_start_steps": int(os.getenv("GO1_DUTY_FACTOR_ASYM_RAMP_START_STEPS", "2000")),
-                    "ramp_duration_steps": int(os.getenv("GO1_DUTY_FACTOR_ASYM_RAMP_STEPS", "6000")),
-                },
-            )
-            self.rewards.diagonal_load_asymmetry = RewTerm(
-                func=mdp.penalize_diagonal_load_asymmetry,
-                weight=float(os.getenv("GO1_DIAGONAL_LOAD_ASYM_WEIGHT", "-0.0015")),
-                params={
-                    "ramp_start_steps": int(os.getenv("GO1_DIAGONAL_LOAD_ASYM_RAMP_START_STEPS", "2000")),
-                    "ramp_duration_steps": int(os.getenv("GO1_DIAGONAL_LOAD_ASYM_RAMP_STEPS", "6000")),
-                },
-            )
-            self.rewards.front_rear_load_distribution = RewTerm(
-                func=mdp.penalize_front_rear_load_distribution,
-                weight=float(os.getenv("GO1_FRONT_REAR_LOAD_DIST_WEIGHT", "-0.0005")),
-                params={
-                    "target_front_fraction": float(os.getenv("GO1_FRONT_LOAD_TARGET_FRACTION", "0.60")),
-                    "tolerance": float(os.getenv("GO1_FRONT_LOAD_TARGET_TOLERANCE", "0.10")),
-                    "ramp_start_steps": int(os.getenv("GO1_FRONT_REAR_LOAD_DIST_RAMP_START_STEPS", "2000")),
-                    "ramp_duration_steps": int(os.getenv("GO1_FRONT_REAR_LOAD_DIST_RAMP_STEPS", "6000")),
-                },
-            )
-            self.rewards.trot_sync = RewTerm(
-                func=mdp.reward_trot_synchronization,
-                weight=float(os.getenv("GO1_TROT_SYNC_WEIGHT", "0.03")),
-                params={
-                    "ramp_start_steps": int(os.getenv("GO1_TROT_SYNC_RAMP_START_STEPS", "2000")),
-                    "ramp_duration_steps": int(os.getenv("GO1_TROT_SYNC_RAMP_STEPS", "6000")),
-                },
-            )
-            self.rewards.duty_factor_deviation = RewTerm(
-                func=mdp.penalize_duty_factor_deviation,
-                weight=float(os.getenv("GO1_DUTY_FACTOR_DEVIATION_WEIGHT", "0.0")),
-                params={
-                    "contact_threshold": float(os.getenv("GO1_PAIN_CONTACT_THRESHOLD_N", "1.0")),
-                    "target_contact_count": float(os.getenv("GO1_TARGET_CONTACT_COUNT", "2.0")),
-                },
-            )
-            _target_duty = tuple(
-                float(v)
-                for v in os.getenv("GO1_LEG_DUTY_TARGETS", "0.55,0.55,0.50,0.50").split(",")
-            )
-            if len(_target_duty) != 4:
-                raise ValueError(
-                    "GO1_LEG_DUTY_TARGETS must contain four comma-separated values "
-                    "for FL,FR,RL,RR."
-                )
-            self.rewards.leg_duty_factor_targets = RewTerm(
-                func=mdp.penalize_leg_duty_factor_targets,
-                weight=float(os.getenv("GO1_LEG_DUTY_TARGET_WEIGHT", "0.0")),
-                params={
-                    "contact_threshold": float(os.getenv("GO1_PAIN_CONTACT_THRESHOLD_N", "1.0")),
-                    "target_duty": _target_duty,
-                    "tolerance": float(os.getenv("GO1_LEG_DUTY_TARGET_TOLERANCE", "0.03")),
-                    "ramp_start_steps": int(os.getenv("GO1_LEG_DUTY_TARGET_RAMP_START_STEPS", "2000")),
-                    "ramp_duration_steps": int(os.getenv("GO1_LEG_DUTY_TARGET_RAMP_STEPS", "6000")),
-                },
-            )
-            if hasattr(self.rewards, "feet_air_time"):
-                self.rewards.feet_air_time.weight = float(
-                    os.getenv("GO1_PHASE1_FEET_AIR_TIME_WEIGHT", str(self.rewards.feet_air_time.weight))
-                )
-
-        # Phase 1은 peg-leg curriculum/통증 보상/termination 수정 없이 종료합니다.
+        # GO1_PHASE=healthy: 순정 healthy env (peg-leg/통증/termination 수정 없음)로
+        # 종료합니다. 주의: 현 파이프라인의 Phase 1(launch_phase1.sh)은 이 분기가
+        # 아니라 GO1_PHASE=teacher + 부상 확률/통증 weight 0 으로 학습됩니다
+        # (train_phase2.sh 참고 — 두 phase 의 env 구조를 동일하게 유지해 warm-start
+        # 호환성을 보장하기 위함).
         if not enable_peg_leg:
             return
 

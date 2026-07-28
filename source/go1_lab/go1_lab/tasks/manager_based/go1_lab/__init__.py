@@ -18,8 +18,11 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.go1_lab_env_cfg:Go1LabEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
-        "rsl_rl_teacher_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:TeacherRunnerCfg",
+        # The default entry point (train.py/play.py without --agent) is the
+        # same TeacherMlpRunnerCfg the phase1/phase2 pipeline trains with, so
+        # agent-less runs never resolve to an architecture the checkpoints
+        # lack.
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:TeacherMlpRunnerCfg",
         "rsl_rl_teacher_mlp_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:TeacherMlpRunnerCfg",
         "rsl_rl_distill_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DistillRunnerCfg",
     },

@@ -88,7 +88,6 @@ export GO1_PHASE="${GO1_PHASE:-teacher}"
 export GO1_PROPRIO_ONLY="${GO1_PROPRIO_ONLY:-1}"
 export GO1_FLAT_TERRAIN="${GO1_FLAT_TERRAIN:-1}"
 export GO1_DOMAIN_RAND="${GO1_DOMAIN_RAND:-1}"
-export GO1_PHASE1_BALANCE_REWARDS="${GO1_PHASE1_BALANCE_REWARDS:-0}"
 export GO1_PHASE2_GAIT_TUNING="${GO1_PHASE2_GAIT_TUNING:-0}"
 
 # --- injury model (functional splint) + curriculum ---------------------------
@@ -142,10 +141,10 @@ export GO1_FLAT_ORIENTATION_WEIGHT="${GO1_FLAT_ORIENTATION_WEIGHT:--1.5}"
 export GO1_BASE_HEIGHT_TARGET="${GO1_BASE_HEIGHT_TARGET:-0.27}"
 export GO1_BASE_HEIGHT_WEIGHT="${GO1_BASE_HEIGHT_WEIGHT:--0.15}"
 
-# --- prescriptive gait terms: OFF (would contradict the emergence claim) ------
+# --- prescritive gait terms: OFF (would contradict the emergence claim) ------
 # These MUST be set: go1_lab_env_cfg.py enables every one of them by default.
 # Their ramp/threshold parameters are left at the source defaults since a zero
-# weight makes them inert.
+# weight makes them inert.p
 export GO1_CONTACT_FORCE_ASYM_WEIGHT="${GO1_CONTACT_FORCE_ASYM_WEIGHT:-0.0}"
 export GO1_DUTY_FACTOR_ASYM_WEIGHT="${GO1_DUTY_FACTOR_ASYM_WEIGHT:-0.0}"
 export GO1_DIAGONAL_LOAD_ASYM_WEIGHT="${GO1_DIAGONAL_LOAD_ASYM_WEIGHT:-0.0}"

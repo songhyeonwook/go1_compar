@@ -11,143 +11,17 @@ from isaaclab_rl.rsl_rl import (
     RslRlDistillationStudentTeacherRecurrentCfg,
     RslRlOnPolicyRunnerCfg,
     RslRlPpoActorCriticCfg,
-    RslRlPpoActorCriticRecurrentCfg,
     RslRlPpoAlgorithmCfg,
 )
 
 
 # =====================================================================
-# Phase 1: Healthy pretrain (정상 보행 선학습)
+# Phase 1/2: Teacher (MLP, privileged obs)
 # =====================================================================
-
-@configclass
-class HealthyPPOLstmRunnerCfg(RslRlOnPolicyRunnerCfg):
-    """Phase 1: 정상 로봇 보행 pretrain (PPO+LSTM).
-
-    ⭐ 설계 원칙:
-      1. **Teacher(Phase 2) 와 완전히 동일한 policy 아키텍처 + obs dim** 을 사용하여
-         Phase 2 가 Phase 1 체크포인트를 `--resume` 으로 warm-start 할 수 있도록 합니다.
-         → `obs_groups` 에 `privileged_obs` 를 포함 (Phase 1 에서는 [0, 0, 1.0] 로 고정).
-      2. **Isaac Lab 표준 Go1 rough PPO 하이퍼파라미터** 를 최대한 반영
-         (`learning_rate=1e-3`, `num_steps_per_env=24`, entropy/clip/gamma 동일).
-      3. 5 frame observation stacking 은 LSTM 과 중복 메모리이므로 비사용
-         (env_cfg 에서 history_length 오버라이드 제거함).
-    """
-
-    num_steps_per_env = 24
-    # LSTM 은 MLP 대비 수렴이 2-3× 느림. 표준 Go1 rough(MLP 1500) 와 "동등 수준"
-    # baseline 을 확보하려면 약 5-6k iter 가 필요. 3k 는 trot 기본 구조는 나오지만
-    # duty factor 편차/CoM sway 가 완전히 수렴하지 않는 경우가 있어 6000 로 상향.
-    max_iterations = 6000
-    save_interval = 100
-    experiment_name = "unitree_go1_rough_healthy"
-    check_for_nan = True
-
-    # Teacher 와 동일한 obs_groups — Phase 2 에서 resume 시 dim mismatch 없음.
-    obs_groups = {
-        "policy": ["policy", "privileged_obs"],
-        "critic": ["policy", "privileged_obs"],
-    }
-
-    policy = RslRlPpoActorCriticRecurrentCfg(
-        init_noise_std=1.0,
-        noise_std_type="log",
-        actor_obs_normalization=False,
-        critic_obs_normalization=False,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
-        activation="elu",
-        rnn_type="lstm",
-        rnn_hidden_dim=256,
-        rnn_num_layers=1,
-    )
-
-    algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.2,
-        entropy_coef=0.01,
-        num_learning_epochs=5,
-        num_mini_batches=4,
-        # Isaac Lab 표준 Go1 rough 와 동일 (LSTM 도 adaptive schedule 하에서
-        # 1e-3 시작 → 자동으로 줄어들며 안정). 3e-4 는 지나치게 보수적이었음.
-        learning_rate=1.0e-3,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.01,
-        max_grad_norm=1.0,
-    )
-
-
-@configclass
-class PPORunnerCfg(HealthyPPOLstmRunnerCfg):
-    """기본 엔트리포인트: Phase 1 정상 보행 PPO+LSTM."""
-
-    pass
-
-
-# =====================================================================
-# Phase 2: Teacher (peg-leg 환경 + privileged obs)
-# =====================================================================
-
-@configclass
-class TeacherRunnerCfg(RslRlOnPolicyRunnerCfg):
-    """Phase 2: Teacher PPO+LSTM (privileged obs 포함).
-
-    Teacher 는 privileged_obs(부상 다리, 부목 길이, 마찰) 를 직접 관측해 최적 보행을 학습합니다.
-
-    ⭐ **Phase 1 warm-start 구조**:
-      - `HealthyPPOLstmRunnerCfg` 와 동일한 아키텍처/obs dim 이므로 Phase 1 체크포인트를
-        `--resume --load_run healthy_vX --checkpoint model_N.pt` 로 이어서 학습 가능.
-      - Phase 1: 정상 env 만 (peg-leg 없음) → 기본 보행 학습.
-      - Phase 2: peg-leg 시나리오 50% 포함 → 기본 보행 유지 + 부상 적응 추가 학습.
-    """
-
-    num_steps_per_env = 24
-    # Phase 1 에서 이미 보행이 학습되었으므로 Teacher 는 peg-leg 적응에만 집중.
-    max_iterations = 5000
-    save_interval = 50
-    experiment_name = "unitree_go1_rough_teacher"
-    check_for_nan = True
-
-    obs_groups = {
-        "policy": ["policy", "privileged_obs"],
-        "critic": ["policy", "privileged_obs"],
-    }
-
-    policy = RslRlPpoActorCriticRecurrentCfg(
-        init_noise_std=1.0,
-        noise_std_type="log",
-        actor_obs_normalization=False,
-        critic_obs_normalization=False,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
-        activation="elu",
-        rnn_type="lstm",
-        rnn_hidden_dim=256,
-        rnn_num_layers=1,
-    )
-
-    algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.2,
-        entropy_coef=0.01,
-        num_learning_epochs=5,
-        num_mini_batches=4,
-        learning_rate=3.0e-4,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.01,
-        max_grad_norm=1.0,
-    )
-
 
 @configclass
 class TeacherMlpRunnerCfg(RslRlOnPolicyRunnerCfg):
-    """Phase 2 antalgic teacher — feedforward MLP, NO mirror augmentation.
+    """Phase 1,2 antalgic teacher — feedforward MLP, NO mirror augmentation.
 
     In canonical RMA the teacher is FEEDFORWARD (it observes the privileged state
     directly, so needs no memory); recurrence belongs to the student adaptation

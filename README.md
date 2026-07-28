@@ -29,7 +29,7 @@ cd baselines
 ./launch_phase1.sh 42                       # → logs/.../phase1_mlp_s42/model_5999.pt
 
 # 2) phase1에서 warm-start → 부상(기능적 부목)+통각(eq.4) 얹어 antalgic 학습.
-#    제안 알고리즘 = 이 antalgic 팔. faulttol/symmetry 는 동일 파이프라인의 비교군.
+#    제안 알고리즘 = 이 antalgic 조건. faulttol/symmetry 는 동일 파이프라인의 비교군.
 ./launch_warmstart_compar.sh antalgic 42    # 기본: 번들 models/phase1_mlp_s42
 #   직접 학습한 phase1을 쓰려면 경로를 3번째 인자로 명시한다:
 ./launch_warmstart_compar.sh antalgic 42 ../scripts/rsl_rl/logs/rsl_rl/unitree_go1_rough_teacher/<run>/model_5999.pt
@@ -95,18 +95,19 @@ models/phase1_mlp_s42/   번들된 clean phase1 체크포인트 (2.6Hz walk, war
 baselines/               실행 스크립트 (모두 portable: systemd 없이 foreground)
   launch_phase1.sh       [1단계]  정상보행 phase1 학습 (teacher-MLP). 번들 models/ 를
                                   다시 만들 때만 쓴다 — 평소엔 실행할 필요 없음.
-  launch_warmstart_compar.sh      [2단계] 팔 1개를 phase1에서 warm-start해 학습.
+  launch_warmstart_compar.sh      [2단계] 패러다임 1개를 phase1에서 warm-start해 학습.
                                   인자에 따라 제안/비교군이 갈린다:
                                     antalgic  → [제안]   통각 penalty (제안 알고리즘 본체)
                                     faulttol  → [비교군] 통각 없음
                                     symmetry  → [비교군] 좌우대칭 penalty
   run_baselines.sh       [공통] 제안+비교군 3개 학습 → 자동 평가·비교 (detached)
   run_nseed_compar.sh    [공통] 위를 n-seed로 반복 → 패러다임별 mean±SD·95% CI
-  eval_compar.sh         [공통] 3개 저속평가 → biomech 덤프 → 비교표
+  eval_compar.sh         [공통] 3개를 속도 sweep으로 평가 → biomech 덤프 → 속도별 비교표
+                                (SPEEDS 환경변수, 기본 "0.0 0.25 0.5 0.75 1.0" m/s)
   compare_3paradigm.py   direction/GRF/SI 비교표
 ```
 
-## 설정 (서버)
+## 환경 설정
 
 1. **Isaac Lab 5.1** 설치 (NVIDIA 문서 참조) + 해당 python 환경 활성화.
 2. 이 확장 설치:
@@ -137,6 +138,18 @@ nohup ./run_nseed_compar.sh "42 43 44 45 46" > nseed.log 2>&1 &
 
 옵션: `PARALLEL=1 ./run_baselines.sh 42` (작은 GPU에서 순차 실행),
 `NUM_ENVS=1024 ...`, `PHASE2_MAX_ITER=12000 ...`.
+
+평가 속도는 `SPEEDS` 로 지정한다 (기본 `0.0 0.25 0.5 0.75 1.0` m/s). GRF·duty factor는
+속도 의존적이라 속도별로 따로 비교표를 낸다.
+```bash
+SPEEDS="0.0 0.25 0.5 0.75 1.0" ./eval_compar.sh 42
+```
+
+> **⚠ 평가 속도는 학습 속도 범위 안이어야 한다.**
+> 현재 학습은 `GO1_CMD_VX_MIN=0.10 GO1_CMD_VX_MAX=0.30` 이다. 0.3 m/s를 넘는 평가는
+> 학습 분포 밖이라 외삽이며, 세 패러다임 모두 학습한 적 없는 영역에서 비교하는 셈이
+> 된다. 0~1 m/s로 평가하려면 `launch_phase1.sh` 와 `launch_warmstart_compar.sh` 의
+> `GO1_CMD_VX_MIN/MAX` 를 `0.0/1.0` 으로 넓혀 **phase1부터 다시 학습**해야 한다.
 
 ## 설계 노트 (검토 요망)
 

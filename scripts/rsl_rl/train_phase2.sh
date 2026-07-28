@@ -1,9 +1,25 @@
 #!/bin/bash
 # =============================================================================
-# Phase 2 teacher training — THE single entry point (train.py wrapper).
+# Phase 1 / Phase 2 teacher training — THE single entry point (train.py wrapper).
 # =============================================================================
+# Despite the name this trains BOTH phases; Phase 1 is just the special case with
+# no injury and no pain. baselines/launch_phase1.sh calls it with
+# GO1_PROB_PEG_LEG=0, GO1_PAIN_WEIGHT=0, GO1_USE_PEG_LEG_CURRICULUM=0 and the
+# viability floor off. Sharing one entry point is deliberate: it makes it
+# impossible for Phase 1 and Phase 2 to drift apart in architecture or
+# observation dimensions, which is exactly what the warm-start requires.
+#
+# This script contains no learning logic — it only resolves the warm-start and
+# sets the GO1_* environment that go1_lab_env_cfg.py reads to assemble the
+# reward/injury/curriculum, then calls train.py. It is effectively a config file
+# that happens to be written in bash.
+#
 # Every knob below is `${VAR:-default}`, so a launcher in baselines/ overrides it
-# simply by exporting it. The defaults here are the paper configuration:
+# simply by exporting it. Knobs whose value merely repeats the go1_lab_env_cfg.py
+# default are omitted rather than restated, EXCEPT where the value documents a
+# load-bearing experimental choice (injury model, curriculum, eq.3 weights, the
+# 3-paradigm comparison variable) — those stay visible even when redundant.
+# The defaults here are the paper configuration:
 #
 #   reward (eq.3)  r = W_task r_task(v,v*) - W_energy ||tau||^2 - W_pain C_pain(Fz)
 #   pain   (eq.4)  C_pain(Fz) = Pbase 1[contact] + max(0, exp(a (Fz - Fth)) - 1)
@@ -25,7 +41,8 @@
 # injured corner until it tips over; penalising trunk-tilt ANGLE and allowing a
 # slight squat lets it load the peg at a LEVEL posture instead.
 #
-# Usage (normally called via baselines/launch_*.sh, not directly):
+# Usage: always via baselines/launch_*.sh, which supply the per-experiment
+# overrides (PD gains, command ranges, splint geometry, run name). Direct use:
 #   GO1_NO_WARMSTART=1 PHASE2_RUN_NAME=my_run ./train_phase2.sh   # from scratch
 #   PHASE1_CKPT=/path/model_5999.pt PHASE2_RUN_NAME=my_run ./train_phase2.sh
 # =============================================================================
@@ -68,7 +85,6 @@ fi
 # sensing"); privileged obs stay on for the teacher. Phase 1 must use the same
 # flags or the warm-start is dimension-incompatible.
 export GO1_PHASE="${GO1_PHASE:-teacher}"
-export GO1_EVAL_MODE="${GO1_EVAL_MODE:-random}"
 export GO1_PROPRIO_ONLY="${GO1_PROPRIO_ONLY:-1}"
 export GO1_FLAT_TERRAIN="${GO1_FLAT_TERRAIN:-1}"
 export GO1_DOMAIN_RAND="${GO1_DOMAIN_RAND:-1}"
@@ -100,15 +116,9 @@ export GO1_PAIN_MAX_PENALTY="${GO1_PAIN_MAX_PENALTY:-200}"
 # the rigid stump contacts ground through the calf/peg, so Fz at the impaired
 # limb IS the calf contact force -> include_calf=1 is the correct measurement.
 export GO1_PAIN_INCLUDE_CALF="${GO1_PAIN_INCLUDE_CALF:-1}"
-export GO1_PAIN_LOAD_CONTACT_COST="${GO1_PAIN_LOAD_CONTACT_COST:-0.0}"
+# severity comes from MORPHOLOGY (the splint's eq.1-2 Jacobian), never from
+# rescaling pain -> the severe/mild threshold+scale multipliers stay unused.
 export GO1_PAIN_SEVERITY_SCALING="${GO1_PAIN_SEVERITY_SCALING:-0}"
-export GO1_PAIN_LOAD_COST_SEVERE_MULT="${GO1_PAIN_LOAD_COST_SEVERE_MULT:-1.20}"
-export GO1_PAIN_LOAD_COST_MILD_MULT="${GO1_PAIN_LOAD_COST_MILD_MULT:-0.80}"
-export GO1_PAIN_THRESHOLD_SEVERE_MULT="${GO1_PAIN_THRESHOLD_SEVERE_MULT:-0.80}"
-export GO1_PAIN_THRESHOLD_MILD_MULT="${GO1_PAIN_THRESHOLD_MILD_MULT:-1.15}"
-export GO1_PAIN_SCALE_SEVERE_MULT="${GO1_PAIN_SCALE_SEVERE_MULT:-1.25}"
-export GO1_PAIN_SCALE_MILD_MULT="${GO1_PAIN_SCALE_MILD_MULT:-0.85}"
-export GO1_LOAD_CONTACT_THRESHOLD_N="${GO1_LOAD_CONTACT_THRESHOLD_N:-10.0}"
 
 # --- alternative impaired-limb rewards (the 3-paradigm comparison variable) ---
 # antalgic = pain only; faulttol = neither; symmetry = mirror penalty only.
@@ -118,13 +128,9 @@ export GO1_SYMMETRY_PENALTY_WEIGHT="${GO1_SYMMETRY_PENALTY_WEIGHT:-0.0}"
 export GO1_INJURED_FORCE_NONUSE_WEIGHT="${GO1_INJURED_FORCE_NONUSE_WEIGHT:--1.0}"
 export GO1_INJURED_MIN_FORCE_SEVERE_N="${GO1_INJURED_MIN_FORCE_SEVERE_N:-6.0}"
 export GO1_INJURED_MIN_FORCE_MILD_N="${GO1_INJURED_MIN_FORCE_MILD_N:-6.0}"
-export GO1_INJURED_MIN_FORCE_FRONT_MULT="${GO1_INJURED_MIN_FORCE_FRONT_MULT:-1.15}"
-export GO1_INJURED_MIN_FORCE_REAR_MULT="${GO1_INJURED_MIN_FORCE_REAR_MULT:-1.0}"
 export GO1_INJURED_DUTY_NONUSE_WEIGHT="${GO1_INJURED_DUTY_NONUSE_WEIGHT:-0.0}"
 export GO1_INJURED_MIN_DUTY_SEVERE="${GO1_INJURED_MIN_DUTY_SEVERE:-0.05}"
 export GO1_INJURED_MIN_DUTY_MILD="${GO1_INJURED_MIN_DUTY_MILD:-0.28}"
-export GO1_INJURED_MIN_DUTY_FRONT_MULT="${GO1_INJURED_MIN_DUTY_FRONT_MULT:-1.10}"
-export GO1_INJURED_MIN_DUTY_REAR_MULT="${GO1_INJURED_MIN_DUTY_REAR_MULT:-1.0}"
 export GO1_INJURED_NONUSE_EMA_ALPHA="${GO1_INJURED_NONUSE_EMA_ALPHA:-0.90}"
 export GO1_INJURED_NONUSE_RAMP_STEPS="${GO1_INJURED_NONUSE_RAMP_STEPS:-2000}"
 
@@ -135,37 +141,16 @@ export GO1_SURVIVAL_BONUS_WEIGHT="${GO1_SURVIVAL_BONUS_WEIGHT:-0.5}"
 export GO1_FLAT_ORIENTATION_WEIGHT="${GO1_FLAT_ORIENTATION_WEIGHT:--1.5}"
 export GO1_BASE_HEIGHT_TARGET="${GO1_BASE_HEIGHT_TARGET:-0.27}"
 export GO1_BASE_HEIGHT_WEIGHT="${GO1_BASE_HEIGHT_WEIGHT:--0.15}"
-export GO1_ROOT_TOO_LOW_MIN_HEIGHT="${GO1_ROOT_TOO_LOW_MIN_HEIGHT:-0.15}"
-export GO1_FRONT_PAYLOAD_KG="${GO1_FRONT_PAYLOAD_KG:-0.0}"
-export GO1_FRONT_COM_X_M="${GO1_FRONT_COM_X_M:-0.0}"
 
 # --- prescriptive gait terms: OFF (would contradict the emergence claim) ------
+# These MUST be set: go1_lab_env_cfg.py enables every one of them by default.
+# Their ramp/threshold parameters are left at the source defaults since a zero
+# weight makes them inert.
 export GO1_CONTACT_FORCE_ASYM_WEIGHT="${GO1_CONTACT_FORCE_ASYM_WEIGHT:-0.0}"
 export GO1_DUTY_FACTOR_ASYM_WEIGHT="${GO1_DUTY_FACTOR_ASYM_WEIGHT:-0.0}"
 export GO1_DIAGONAL_LOAD_ASYM_WEIGHT="${GO1_DIAGONAL_LOAD_ASYM_WEIGHT:-0.0}"
 export GO1_FRONT_REAR_LOAD_DIST_WEIGHT="${GO1_FRONT_REAR_LOAD_DIST_WEIGHT:-0.0}"
 export GO1_TROT_SYNC_WEIGHT="${GO1_TROT_SYNC_WEIGHT:-0.0}"
-export GO1_LEG_DUTY_TARGET_WEIGHT="${GO1_LEG_DUTY_TARGET_WEIGHT:-0.0}"
-export GO1_DUTY_FACTOR_DEVIATION_WEIGHT="${GO1_DUTY_FACTOR_DEVIATION_WEIGHT:-0.0}"
-export GO1_INTACT_OVERLOAD_WEIGHT="${GO1_INTACT_OVERLOAD_WEIGHT:-0.0}"
-export GO1_INJURED_DUTY_OVERUSE_WEIGHT="${GO1_INJURED_DUTY_OVERUSE_WEIGHT:-0.0}"
-export GO1_INJURED_LIGHT_DRAG_WEIGHT="${GO1_INJURED_LIGHT_DRAG_WEIGHT:-0.0}"
-# ramp/threshold params for the terms above; inert while their weights are 0.
-export GO1_CONTACT_FORCE_ASYM_RAMP_STEPS="${GO1_CONTACT_FORCE_ASYM_RAMP_STEPS:-6000}"
-export GO1_DUTY_FACTOR_ASYM_RAMP_STEPS="${GO1_DUTY_FACTOR_ASYM_RAMP_STEPS:-6000}"
-export GO1_DIAGONAL_LOAD_ASYM_RAMP_STEPS="${GO1_DIAGONAL_LOAD_ASYM_RAMP_STEPS:-6000}"
-export GO1_FRONT_REAR_LOAD_DIST_RAMP_STEPS="${GO1_FRONT_REAR_LOAD_DIST_RAMP_STEPS:-6000}"
-export GO1_TROT_SYNC_RAMP_STEPS="${GO1_TROT_SYNC_RAMP_STEPS:-6000}"
-export GO1_FRONT_LOAD_TARGET_FRACTION="${GO1_FRONT_LOAD_TARGET_FRACTION:-0.55}"
-export GO1_FRONT_LOAD_TARGET_TOLERANCE="${GO1_FRONT_LOAD_TARGET_TOLERANCE:-0.06}"
-export GO1_INJURED_OVERUSE_RAMP_STEPS="${GO1_INJURED_OVERUSE_RAMP_STEPS:-8000}"
-export GO1_INJURED_MAX_DUTY_SEVERE="${GO1_INJURED_MAX_DUTY_SEVERE:-0.30}"
-export GO1_INJURED_MAX_DUTY_MILD="${GO1_INJURED_MAX_DUTY_MILD:-0.50}"
-export GO1_INJURED_MAX_DUTY_FRONT_MULT="${GO1_INJURED_MAX_DUTY_FRONT_MULT:-0.95}"
-export GO1_INJURED_MAX_DUTY_REAR_MULT="${GO1_INJURED_MAX_DUTY_REAR_MULT:-1.0}"
-export GO1_INTACT_OVERLOAD_THRESHOLD_N="${GO1_INTACT_OVERLOAD_THRESHOLD_N:-65.0}"
-export GO1_INTACT_OVERLOAD_SCALE="${GO1_INTACT_OVERLOAD_SCALE:-1.0}"
-export GO1_INTACT_OVERLOAD_MAX_PENALTY="${GO1_INTACT_OVERLOAD_MAX_PENALTY:-120.0}"
 
 echo "-----------------------------------------------"
 echo "  Phase 2: peg-leg teacher training"

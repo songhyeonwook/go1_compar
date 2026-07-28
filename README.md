@@ -1,12 +1,19 @@
-# go1_compar — antalgic Go1 pipeline + 3-paradigm baseline (self-contained)
+# go1_compar — antalgic Go1 파이프라인 + 환부 보상항 대조군 (self-contained)
 
 **서버에서 clone → 실행**할 수 있도록 환경·학습·평가 코드를 모두 포함한 self-contained repo.
-두 가지 워크플로우:
-1. **Phase1 → Phase2 warm-start 파이프라인** (아래) — 정상 보행을 먼저 학습하고 그 위에
-   부상+통각을 얹어 **생리적 gait를 유지한 antalgic 보행**을 학습. (논문 §4.6 커리큘럼)
-2. **3-paradigm baseline 비교** — 환부 보상항만 바꾼 antalgic/fault-tol/symmetry 비교 (§2.3).
 
-## Phase 1 → Phase 2 warm-start 파이프라인 (gait-faithful)
+**제안 알고리즘과 비교군은 별개의 워크플로우가 아니라 하나의 파이프라인이다.**
+Phase1(정상보행) → Phase2(warm-start + 부상 + 통각)라는 동일한 커리큘럼(§4.6)을 돌리되,
+**환부 다리 보상항 하나만** 바꿔 세 갈래로 나뉜다 (§2.3):
+
+- **antalgic** — 통각 penalty. **이것이 제안 알고리즘**이다.
+- **fault-tolerant** — 통각 없음. 비교군.
+- **symmetry** — 좌우대칭 penalty. 비교군.
+
+셋 다 같은 phase1 체크포인트에서 출발하고 환경·구조·PPO·커리큘럼이 전부 동일하므로,
+결과 차이는 환부 보상항에만 귀속된다.
+
+## 파이프라인: Phase 1 → Phase 2 warm-start (제안 알고리즘)
 
 **설계**: 부상 보행은 정상 보행 위에 얹히는 것이라는 관찰을 그대로 학습 절차로 옮긴다.
 먼저 정상 보행(phase1)을 학습해 생리적 gait를 확보하고, 그 정책에서 warm-start해
@@ -21,20 +28,21 @@ cd baselines
 #    번들 체크포인트(models/)가 있으면 2)가 이걸 쓰지 않는다. 아래 주의 참조.
 ./launch_phase1.sh 42                       # → logs/.../phase1_mlp_s42/model_5999.pt
 
-# 2) phase1에서 warm-start → 부상(기능적 부목)+통각(eq.4) 얹어 antalgic 학습
-./launch_warmstart_phase2.sh 42             # 기본: 번들 models/phase1_mlp_s42
-#   직접 학습한 걸 쓰려면 경로를 명시한다:
-./launch_warmstart_phase2.sh 42 ../scripts/rsl_rl/logs/rsl_rl/unitree_go1_rough_teacher/<run>/model_5999.pt
+# 2) phase1에서 warm-start → 부상(기능적 부목)+통각(eq.4) 얹어 antalgic 학습.
+#    제안 알고리즘 = 이 antalgic 팔. faulttol/symmetry 는 동일 파이프라인의 비교군.
+./launch_warmstart_compar.sh antalgic 42    # 기본: 번들 models/phase1_mlp_s42
+#   직접 학습한 phase1을 쓰려면 경로를 3번째 인자로 명시한다:
+./launch_warmstart_compar.sh antalgic 42 ../scripts/rsl_rl/logs/rsl_rl/unitree_go1_rough_teacher/<run>/model_5999.pt
 
 # 3) 평가 (gait 주파수·부상다리 duty·GRF)
-PHASE2_RUN_NAME=phase2_warmstart_s42 \
+PHASE2_RUN_NAME=phase2_ws_antalgic_s42 \
 GO1_BIOMECH_DUMP=$PWD/../scripts/rsl_rl/biomech/ws.npz \
   ../scripts/rsl_rl/analyze_phase2_balanced.sh   # (AGENT=rsl_rl_teacher_mlp_cfg_entry_point)
 ```
 **판정 기준**: normal gait 2–3 Hz, 부상다리 duty 0.3–0.5(부분하중), 4다리 안정.
 
 > **phase1은 seed와 무관하게 고정이다 — 의도된 통제.**
-> `launch_warmstart_*.sh`는 번들 `models/phase1_mlp_s42/model_5999.pt` 를 항상 warm-start
+> `launch_warmstart_compar.sh`는 번들 `models/phase1_mlp_s42/model_5999.pt` 를 항상 warm-start
 > 소스로 쓴다(경로를 인자로 넘기면 그게 우선). 모든 패러다임·모든 seed가 **동일한 초기
 > 정책**에서 출발하므로, 패러다임 간 차이를 오직 환부 보상항에 귀속시킬 수 있는
 > matched design이 된다 — phase1이 우연히 좋았는지 여부가 비교에 개입하지 못한다.
@@ -49,10 +57,11 @@ GO1_BIOMECH_DUMP=$PWD/../scripts/rsl_rl/biomech/ws.npz \
 
 ---
 
-## 3-paradigm baseline 비교
+## 비교군: 같은 파이프라인, 환부 보상항만 교체
 
 제안 방법(antalgic)이 부상동물 biomechanics를 재현하는 것이 **통각 보상 때문**임을,
 **동일한 환경·구조에서 환부 다리 보상항만 바꾼** 3개 패러다임 비교로 입증한다.
+위 파이프라인의 2단계에서 인자만 `faulttol`/`symmetry` 로 바꾸면 비교군이 된다.
 
 ## 3개 패러다임 (환부 다리 보상항만 다름)
 
@@ -84,12 +93,16 @@ scripts/rsl_rl/          학습·평가 파이프라인
 models/phase1_mlp_s42/   번들된 clean phase1 체크포인트 (2.6Hz walk, warm-start 소스).
                          서버에서 재학습 없이 바로 warm-start 가능 (git 추적됨).
 baselines/               실행 스크립트 (모두 portable: systemd 없이 foreground)
-  launch_phase1.sh          [파이프라인] 정상보행 phase1 (teacher-MLP, warm-start 호환)
-  launch_warmstart_phase2.sh[파이프라인] phase1→phase2 warm-start + 부상 + 통각
-  launch_warmstart_compar.sh[baseline] 패러다임 1개 학습 (3개 모두 같은 phase1에서 warm-start)
-  run_baselines.sh       [baseline] 3개 패러다임 학습 → 자동 평가·비교 (detached)
-  run_nseed_compar.sh    [baseline] 위를 n-seed로 반복 → 패러다임별 mean±SD·95% CI
-  eval_compar.sh         [baseline] 3 패러다임 저속평가 → biomech 덤프 → 비교표
+  launch_phase1.sh       [1단계]  정상보행 phase1 학습 (teacher-MLP). 번들 models/ 를
+                                  다시 만들 때만 쓴다 — 평소엔 실행할 필요 없음.
+  launch_warmstart_compar.sh      [2단계] 팔 1개를 phase1에서 warm-start해 학습.
+                                  인자에 따라 제안/비교군이 갈린다:
+                                    antalgic  → [제안]   통각 penalty (제안 알고리즘 본체)
+                                    faulttol  → [비교군] 통각 없음
+                                    symmetry  → [비교군] 좌우대칭 penalty
+  run_baselines.sh       [공통] 제안+비교군 3개 학습 → 자동 평가·비교 (detached)
+  run_nseed_compar.sh    [공통] 위를 n-seed로 반복 → 패러다임별 mean±SD·95% CI
+  eval_compar.sh         [공통] 3개 저속평가 → biomech 덤프 → 비교표
   compare_3paradigm.py   direction/GRF/SI 비교표
 ```
 
@@ -107,15 +120,15 @@ baselines/               실행 스크립트 (모두 portable: systemd 없이 fo
 
 ```bash
 cd baselines
-# 3개 패러다임 학습 + 자동 비교 (seed 42). detached 권장:
+# 제안(antalgic) + 비교군 2개 학습 + 자동 비교 (seed 42). detached 권장:
 nohup ./run_baselines.sh 42 > run42.log 2>&1 &
 #   → 번들 phase1(models/)에서 3개 모두 warm-start → phase2_ws_<paradigm>_s42
 #   → 완료 시 baselines/compare_result.txt 에 비교표
 
 # 개별 실행:
-./launch_warmstart_compar.sh antalgic 42   # (foreground; nohup/tmux로 백그라운드)
-./launch_warmstart_compar.sh faulttol 42
-./launch_warmstart_compar.sh symmetry 42
+./launch_warmstart_compar.sh antalgic 42   # 제안 알고리즘 (foreground; nohup/tmux 권장)
+./launch_warmstart_compar.sh faulttol 42   # 비교군
+./launch_warmstart_compar.sh symmetry 42   # 비교군
 ./eval_compar.sh 42                        # 학습 완료 후 평가+비교
 
 # n-seed 통계 (패러다임별 mean±SD, 95% CI):

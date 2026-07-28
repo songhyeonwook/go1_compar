@@ -1,10 +1,12 @@
 #!/bin/bash
-# 3-paradigm comparison, WARM-STARTED from the SAME clean phase1 (models/phase1_mlp_s42).
-# Maximally controlled: identical phase1 init, environment, injury model, viability floor,
-# gait_tuning, PD and schedule — the ONLY difference is the impaired-limb reward:
-#   antalgic : nociceptor pain (exp, eq.4)      GO1_PAIN_WEIGHT=-0.05  SYM=0
-#   faulttol : no pain, alive bonus only        GO1_PAIN_WEIGHT=0      SYM=0
-#   symmetry : no pain, mirror-symmetry penalty GO1_PAIN_WEIGHT=0      SYM=-2.0
+# Phase 2 of the pipeline, WARM-STARTED from the SAME clean phase1
+# (models/phase1_mlp_s42). This trains BOTH the proposed method and its controls --
+# they are the same pipeline and differ only in the impaired-limb reward:
+#   antalgic : nociceptor pain (exp, eq.4)      GO1_PAIN_WEIGHT=-0.05  SYM=0   <-- PROPOSED
+#   faulttol : no pain, alive bonus only        GO1_PAIN_WEIGHT=0      SYM=0       control
+#   symmetry : no pain, mirror-symmetry penalty GO1_PAIN_WEIGHT=0      SYM=-2.0    control
+# Maximally controlled: identical phase1 init, environment, injury model, viability
+# floor, gait_tuning, PD and schedule.
 # Warm-starting all three from the same symmetric healthy gait is a CONSERVATIVE test
 # for antalgia: the policy must actively break the symmetry it inherited in order to
 # off-load the impaired limb, and every paradigm starts from the same physiological

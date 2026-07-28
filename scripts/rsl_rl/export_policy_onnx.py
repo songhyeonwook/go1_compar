@@ -16,7 +16,7 @@ from peg_leg_action_wrapper import PegLegActionMaskWrapper  # isort: skip
 
 
 parser = argparse.ArgumentParser(description="Export an RSL-RL Go1 checkpoint to JIT/ONNX.")
-parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint path. If omitted, use selected Phase 3.")
+# NOTE: --checkpoint is provided by cli_args.add_rsl_rl_args (same dest); do not redefine it here (argparse conflict).
 parser.add_argument("--output_dir", type=str, default=None, help="Export directory. Default: <checkpoint_dir>/exported.")
 parser.add_argument("--task", type=str, default="Template-Go1-Lab-v0")
 parser.add_argument("--agent", type=str, default="rsl_rl_distill_cfg_entry_point")

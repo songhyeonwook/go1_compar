@@ -33,13 +33,19 @@ GO1_BIOMECH_DUMP=$PWD/../scripts/rsl_rl/biomech/ws.npz \
 ```
 **판정 기준**: normal gait 2–3 Hz, 부상다리 duty 0.3–0.5(부분하중), 4다리 안정.
 
-> **⚠ warm-start 소스는 항상 번들 체크포인트다.**
-> `launch_warmstart_*.sh`는 `models/phase1_mlp_s42/model_5999.pt`가 존재하면 **seed와
-> 무관하게** 무조건 그것을 쓴다(경로를 인자로 넘기면 그게 우선). 따라서
-> `./launch_phase1.sh 43` 을 돌려도 `./launch_warmstart_phase2.sh 43` 은 그 결과가 아니라
-> seed-42 번들에서 출발한다. 의도된 통제(모든 결과가 동일한 초기 정책에서 시작)지만,
-> **n-seed 통계의 편차는 phase2 학습 분산만 반영하고 phase1 분산은 포함하지 않는다** —
-> 논문에 이 점을 명시할 것.
+> **phase1은 seed와 무관하게 고정이다 — 의도된 통제.**
+> `launch_warmstart_*.sh`는 번들 `models/phase1_mlp_s42/model_5999.pt` 를 항상 warm-start
+> 소스로 쓴다(경로를 인자로 넘기면 그게 우선). 모든 패러다임·모든 seed가 **동일한 초기
+> 정책**에서 출발하므로, 패러다임 간 차이를 오직 환부 보상항에 귀속시킬 수 있는
+> matched design이 된다 — phase1이 우연히 좋았는지 여부가 비교에 개입하지 못한다.
+>
+> seed가 바꾸는 것은 **환경 랜덤화**(domain rand, 부상 다리 배정, 부목 길이, 초기 상태)와
+> **PPO 탐색·미니배치 셔플**이다(`--seed` → `env_cfg.seed` + `agent_cfg.seed`). 따라서
+> n-seed는 서로 다른 phase2 학습 n회가 맞다. 다만 논문에서는 편차의 범위를 정확히 쓸 것:
+> "공통 phase1에서 출발한 phase2 seed n회"이지 파이프라인 전체 반복이 아니다.
+>
+> phase1 자체를 다시 만들 때만 `launch_phase1.sh` 를 쓰고 그 결과로 `models/` 를 교체한다.
+> (`./launch_phase1.sh 43` 처럼 다른 seed로 돌려도 번들이 있는 한 아무것도 그걸 읽지 않는다.)
 
 ---
 
@@ -123,9 +129,9 @@ nohup ./run_nseed_compar.sh "42 43 44 45 46" > nseed.log 2>&1 &
 
 - **viability floor를 3개 모두에 포함** → 모든 패러다임이 환부를 "사용"하므로
   use-vs-nonuse가 아니라 **보행 패턴**을 공정 비교. 논문에 이 결정 명시.
-- **n-seed는 phase1을 공유한다** — 모든 seed가 번들 `models/phase1_mlp_s42` 에서
-  warm-start하므로 mean±SD는 phase2 분산만 잡는다. phase1 분산까지 포함하려면
-  seed별로 `launch_phase1.sh <seed>` 를 돌리고 그 경로를 명시적으로 넘겨야 한다.
+- **모든 seed가 phase1을 공유하는 것은 통제 장치** — 세 패러다임이 동일한 초기 정책에서
+  출발하므로 차이가 환부 보상항에 귀속된다(위 §Phase1→Phase2 주석 참조). 논문에는
+  편차의 범위만 정확히 적으면 된다: "공통 phase1에서 출발한 phase2 seed n회".
 - **symmetry 가중치 −2.0은 시작값** — 대칭이 실제로 강제되도록 −1~−5 조정 확인 권장.
 - 학습/평가 산출물은 `scripts/rsl_rl/logs`·`scripts/rsl_rl/biomech` 에 저장(gitignore).
 

@@ -364,30 +364,6 @@ def _get_peg_leg_per_env(
     return result
 
 
-def randomize_peg_leg_geometry(
-    env: "ManagerBasedRLEnv",
-    env_ids: torch.Tensor,
-    asset_cfg: SceneEntityCfg,
-    scale_range: tuple[float, float] = (0.5, 1.5),
-    prob_peg_leg: float = 0.2,
-):
-    """[비활성화] 기하학적 랜덤화(다리 길이)는 현재 실험에서 사용하지 않습니다."""
-    _ = (env, env_ids, asset_cfg, scale_range, prob_peg_leg)
-    return
-
-
-def randomize_peg_leg_dynamics(
-    env: "ManagerBasedRLEnv",
-    env_ids: torch.Tensor,
-    asset_cfg: SceneEntityCfg,
-    mass_range: tuple[float, float] = (0.1, 2.0),
-    prob_peg_leg: float = 0.2,
-):
-    """[비활성화] 동역학 랜덤화(질량 변화)는 현재 실험에서 사용하지 않습니다."""
-    _ = (env, env_ids, asset_cfg, mass_range, prob_peg_leg)
-    return
-
-
 def _sample_splint_lengths(
     env: "ManagerBasedRLEnv", env_ids: torch.Tensor, length_range: tuple[float, float]
 ) -> torch.Tensor:

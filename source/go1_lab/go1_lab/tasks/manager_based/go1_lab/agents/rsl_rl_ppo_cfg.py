@@ -13,11 +13,7 @@ from isaaclab_rl.rsl_rl import (
     RslRlPpoActorCriticCfg,
     RslRlPpoActorCriticRecurrentCfg,
     RslRlPpoAlgorithmCfg,
-    RslRlSymmetryCfg,
 )
-
-from go1_lab.tasks.manager_based.go1_lab.mdp import mirror
-from go1_lab.tasks.manager_based.go1_lab.mdp import symmetric_ppo  # noqa: F401  registers SymmetricPPO
 
 
 # =====================================================================
@@ -91,364 +87,6 @@ class PPORunnerCfg(HealthyPPOLstmRunnerCfg):
     pass
 
 
-@configclass
-class HealthyPPOLstmSymmetryRunnerCfg(HealthyPPOLstmRunnerCfg):
-    """Phase 1 paper baseline with Go1 left/right symmetry augmentation."""
-
-    algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.2,
-        entropy_coef=0.005,
-        num_learning_epochs=5,
-        num_mini_batches=4,
-        learning_rate=3.0e-4,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.01,
-        max_grad_norm=1.0,
-        # Do not set symmetry_cfg for recurrent policies. In this RSL-RL
-        # version, symmetry logging/loss calls act_inference on recurrent
-        # mini-batches and sends a 4-D tensor into the LSTM. LSTM symmetry is
-        # enforced through environment rewards and the external paper selectors.
-    )
-
-
-@configclass
-class HealthyPPOLstmMirrorRunnerCfg(HealthyPPOLstmRunnerCfg):
-    """Phase 1 healthy baseline with LSTM-compatible left/right mirror augmentation.
-
-    Identical architecture / obs_groups / hyperparameters to the plain LSTM
-    baseline; only the PPO algorithm class is swapped to ``SymmetricPPO``, which
-    mirror-doubles the rollout storage before each update (works with recurrent
-    policies, unlike RSL-RL's built-in symmetry_cfg). The reward is untouched —
-    this enforces the paper's normal-gait mirror-symmetry constraint structurally.
-    """
-
-    algorithm = RslRlPpoAlgorithmCfg(
-        class_name="SymmetricPPO",
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.2,
-        entropy_coef=0.01,
-        num_learning_epochs=5,
-        num_mini_batches=4,
-        learning_rate=1.0e-3,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.01,
-        max_grad_norm=1.0,
-    )
-
-
-@configclass
-class HealthyPPOLstmDutyRefineRunnerCfg(HealthyPPOLstmRunnerCfg):
-    """Short LSTM refine that preserves force symmetry and fixes duty/trot."""
-
-    max_iterations = 1500
-    save_interval = 100
-    run_name = "phase1_default_duty_trot_refine"
-
-    algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.12,
-        entropy_coef=0.004,
-        num_learning_epochs=5,
-        num_mini_batches=4,
-        learning_rate=1.0e-4,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.006,
-        max_grad_norm=0.7,
-        # The warm-start checkpoint already has good force symmetry. This stage
-        # corrects duty factor and trot timing. Do not set symmetry_cfg here:
-        # recurrent symmetry logging in this RSL-RL version feeds a 4-D tensor
-        # to the LSTM. Symmetry is enforced by rewards and paper selectors.
-    )
-
-
-@configclass
-class HealthyPPOLstmTrotBoostRunnerCfg(HealthyPPOLstmRunnerCfg):
-    """Phase 1 trot-boost refine: push trot_score from 0.90 to 0.92+
-    while holding FL/FR force SI ≤ 5%.
-
-    Root cause of previous instability:
-      force_asym weight (-0.0008) was 100x weaker than duty_target (-0.080).
-      Duty targets pushed the policy toward patterns that broke force balance.
-
-    Fix:
-      • LR 3x lower (3e-5) — prevents large policy jumps that break SI
-      • KL limit 2x tighter (0.003) — conservative per-step updates
-      • force_asym 15x stronger (via GO1_CONTACT_FORCE_ASYM_WEIGHT env)
-      • duty_target 4x weaker — SI stabilisation is the priority
-      • trot_sync slightly stronger — nudges trot from 0.90→0.92
-
-    Start from the paper-grade Phase 1 checkpoint (model_6100) which
-    already satisfies all gates except trot_score.
-    """
-
-    max_iterations = 600
-    save_interval = 50
-    run_name = "phase1_trot_boost_from_6100"
-
-    algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.08,
-        entropy_coef=0.002,
-        num_learning_epochs=5,
-        num_mini_batches=4,
-        learning_rate=3.0e-5,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.003,
-        max_grad_norm=0.5,
-    )
-
-
-@configclass
-class OfficialGo1SymmetryRunnerCfg(RslRlOnPolicyRunnerCfg):
-    """Phase 1 symmetry fine-tune compatible with Isaac Lab's official Go1 MLP.
-
-    This runner intentionally keeps the official Go1 policy surface:
-    policy-only observations, MLP actor/critic, 24 rollout steps, and the
-    standard PPO hyperparameters. That makes Isaac Lab's published
-    `Isaac-Velocity-Rough-Unitree-Go1-v0` checkpoint load cleanly, then the
-    environment-level symmetry rewards and mirror data augmentation can correct
-    left/right force and duty bias for the paper baseline.
-    """
-
-    num_steps_per_env = 24
-    max_iterations = 6000
-    save_interval = 100
-    experiment_name = "unitree_go1_rough_healthy"
-    run_name = "phase1_official_symmetric"
-    check_for_nan = True
-
-    obs_groups = {
-        "policy": ["policy"],
-        "critic": ["policy"],
-    }
-
-    policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_obs_normalization=False,
-        critic_obs_normalization=False,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
-        activation="elu",
-    )
-
-    algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.2,
-        entropy_coef=0.005,
-        num_learning_epochs=5,
-        num_mini_batches=4,
-        learning_rate=3.0e-4,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.01,
-        max_grad_norm=1.0,
-        symmetry_cfg=RslRlSymmetryCfg(
-            use_data_augmentation=True,
-            data_augmentation_func=mirror.compute_symmetric_states,
-        ),
-    )
-
-
-@configclass
-class OfficialGo1SymmetryRefineRunnerCfg(OfficialGo1SymmetryRunnerCfg):
-    """Short low-LR refinement from a near-symmetric official Go1 checkpoint."""
-
-    max_iterations = 1200
-    save_interval = 100
-    run_name = "phase1_official_symmetric_front_refine"
-
-    algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.12,
-        entropy_coef=0.003,
-        num_learning_epochs=5,
-        num_mini_batches=4,
-        learning_rate=1.0e-4,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.006,
-        max_grad_norm=0.7,
-        symmetry_cfg=RslRlSymmetryCfg(
-            use_data_augmentation=True,
-            data_augmentation_func=mirror.compute_symmetric_states,
-        ),
-    )
-
-
-# =====================================================================
-# RMA-canonical feedforward (MLP) teacher pipeline + exact mirror symmetry
-# =====================================================================
-# The recurrent (LSTM) teacher cannot be made left/right symmetric: the antalgic
-# commitment lives in the LSTM hidden state, which has no canonical mirror, so
-# data augmentation cannot enforce equivariance. In canonical RMA the teacher is
-# FEEDFORWARD (it observes the privileged state directly, so needs no memory);
-# recurrence belongs to the student adaptation module. A feedforward teacher
-# makes mirror data-augmentation EXACT → reliably mirror-symmetric injury
-# responses. The deployed student (Phase 3) stays recurrent (LSTM).
-
-@configclass
-class HealthyMlpSymmetryRunnerCfg(RslRlOnPolicyRunnerCfg):
-    """Phase 1 healthy pretrain — feedforward MLP + exact left/right mirror aug.
-
-    Matches the MLP teacher's architecture / obs_groups (policy + privileged) so
-    Phase 2 can warm-start from it. ``privileged_obs`` is constant in Phase 1
-    ([0,0,1.0]); the mirror callback maps the (normal) injury index to itself.
-    """
-
-    num_steps_per_env = 24
-    max_iterations = 6000
-    save_interval = 100
-    experiment_name = "unitree_go1_rough_healthy"
-    run_name = "phase1_mlp_symmetric"
-    check_for_nan = True
-
-    obs_groups = {
-        "policy": ["policy", "privileged_obs"],
-        "critic": ["policy", "privileged_obs"],
-    }
-
-    policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_obs_normalization=False,
-        critic_obs_normalization=False,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
-        activation="elu",
-    )
-
-    algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.2,
-        entropy_coef=0.005,
-        num_learning_epochs=5,
-        num_mini_batches=4,
-        learning_rate=1.0e-3,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.01,
-        max_grad_norm=1.0,
-        # Clean left/right mirror data augmentation (mirror minibatch only). On a
-        # proprioception-only (R^48) policy + flat symmetric terrain this is
-        # enough for a symmetric gait — the confounds that previously broke the
-        # closed-loop limit cycle (187-dim height_scan, asymmetric rough terrain)
-        # are removed. NOTE: an explicit mirror_loss term destabilised the gait
-        # (CoM sway 0.02→0.10) and stacking balance rewards over-constrained it,
-        # so neither is used. The reward stays the standard locomotion reward.
-        symmetry_cfg=RslRlSymmetryCfg(
-            use_data_augmentation=True,
-            data_augmentation_func=mirror.compute_symmetric_states,
-        ),
-    )
-
-
-@configclass
-class HealthyMlpSymmetryRefineRunnerCfg(HealthyMlpSymmetryRunnerCfg):
-    """Phase 1 low-LR symmetry REFINE from a good-trot MLP checkpoint.
-
-    Single-shot from-scratch symmetric-trot training is high variance (a good
-    trot emerges but left/right force balance — esp. the rear — is unreliable).
-    The proven path (cf. the LSTM model_6100 baseline) is multi-stage: train a
-    good trot first, then low-LR refine with the closed-loop balance rewards to
-    pin force/duty symmetry WITHOUT disturbing the gait. Warm-start from the
-    good-trot checkpoint; keep mirror data augmentation; balance rewards are
-    supplied via GO1_PHASE1_BALANCE_REWARDS=1.
-    """
-
-    max_iterations = 2500
-    save_interval = 100
-    run_name = "phase1_mlp_symmetric_refine"
-
-    algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.10,
-        entropy_coef=0.002,
-        num_learning_epochs=5,
-        num_mini_batches=4,
-        learning_rate=1.0e-4,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.006,
-        max_grad_norm=0.7,
-        symmetry_cfg=RslRlSymmetryCfg(
-            use_data_augmentation=True,
-            data_augmentation_func=mirror.compute_symmetric_states,
-        ),
-    )
-
-
-@configclass
-class TeacherMlpSymmetryRunnerCfg(HealthyMlpSymmetryRunnerCfg):
-    """Phase 2 antalgic teacher — feedforward MLP + exact left/right mirror aug.
-
-    Identical architecture / obs_groups to the Phase 1 MLP baseline (warm-start
-    compatible). The peg-leg environment + privileged injury index are supplied
-    via ``GO1_PHASE=teacher``. The antalgic reward (eq.3) is untouched; mirror
-    augmentation is exact for this feedforward policy, so left- and right-injury
-    cases become mirror images.
-    """
-
-    max_iterations = 5000
-    save_interval = 50
-    experiment_name = "unitree_go1_rough_teacher"
-    run_name = "phase2_mlp_teacher_symmetric"
-
-
-@configclass
-class TeacherMlpRunnerCfg(HealthyMlpSymmetryRunnerCfg):
-    """Phase 2 antalgic teacher — feedforward MLP, NO mirror augmentation.
-
-    Same architecture / obs_groups as the symmetric MLP teacher (warm-start
-    compatible from the MLP Phase-1) but the symmetry data augmentation is
-    removed: under active load-bearing, mirror augmentation drives the policy to
-    the symmetric non-use optimum instead of the antalgic partial loading. The
-    loaded antalgic policy is therefore trained WITHOUT mirror aug; left/right
-    consistency for deployment is restored by canonicalization (mirror the
-    obs/action for right-side injuries at inference), and for the paper by the
-    n-seed aggregate.
-    """
-
-    max_iterations = 5000
-    save_interval = 50
-    experiment_name = "unitree_go1_rough_teacher"
-    run_name = "phase2_mlp_teacher_plain"
-
-    algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.2,
-        entropy_coef=0.005,
-        num_learning_epochs=5,
-        num_mini_batches=4,
-        learning_rate=3.0e-4,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.01,
-        max_grad_norm=1.0,
-    )
-
-
 # =====================================================================
 # Phase 2: Teacher (peg-leg 환경 + privileged obs)
 # =====================================================================
@@ -508,24 +146,48 @@ class TeacherRunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
-class TeacherMirrorRunnerCfg(TeacherRunnerCfg):
-    """Phase 2 Teacher (peg-leg + privileged obs) with LSTM-compatible left/right
-    mirror augmentation.
+class TeacherMlpRunnerCfg(RslRlOnPolicyRunnerCfg):
+    """Phase 2 antalgic teacher — feedforward MLP, NO mirror augmentation.
 
-    Same architecture / obs_groups / hyperparameters as ``TeacherRunnerCfg``; only
-    the PPO algorithm class is swapped to ``SymmetricPPO`` (storage-level mirror
-    doubling, recurrent-safe). The antalgic reward (eq.3: task − energy − pain) is
-    NOT modified — mirror augmentation is a structural constraint that makes
-    left-injury and right-injury cases mirror images while the antalgic response
-    still emerges from the pain/energy objective.
+    In canonical RMA the teacher is FEEDFORWARD (it observes the privileged state
+    directly, so needs no memory); recurrence belongs to the student adaptation
+    module. The deployed student (Phase 3) stays recurrent (LSTM).
+
+    Phase 1 (launch_phase1.sh) uses this same runner cfg with the healthy env, so
+    the Phase-2 warm-start is dimension/architecture compatible. Mirror data
+    augmentation is not used: under active load-bearing it drives the policy to
+    the symmetric non-use optimum instead of the antalgic partial loading.
+    Left/right consistency for deployment is restored by canonicalization (mirror
+    the obs/action for right-side injuries at inference), and for the paper by
+    the n-seed aggregate.
     """
 
+    num_steps_per_env = 24
+    max_iterations = 5000
+    save_interval = 50
+    experiment_name = "unitree_go1_rough_teacher"
+    run_name = "phase2_mlp_teacher_plain"
+    check_for_nan = True
+
+    obs_groups = {
+        "policy": ["policy", "privileged_obs"],
+        "critic": ["policy", "privileged_obs"],
+    }
+
+    policy = RslRlPpoActorCriticCfg(
+        init_noise_std=1.0,
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
+        actor_hidden_dims=[512, 256, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+    )
+
     algorithm = RslRlPpoAlgorithmCfg(
-        class_name="SymmetricPPO",
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.01,
+        entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=3.0e-4,

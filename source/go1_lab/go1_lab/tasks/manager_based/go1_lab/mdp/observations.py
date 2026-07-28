@@ -29,13 +29,6 @@ def peg_leg_one_hot(env: "ManagerBasedRLEnv") -> torch.Tensor:
     return one_hot
 
 
-def peg_leg_calf_lock_angle(env: "ManagerBasedRLEnv") -> torch.Tensor:
-    """고장 다리 calf 고정 각도(rad)를 반환합니다."""
-    if hasattr(env, "_peg_leg_calf_lock_angle"):
-        return env._peg_leg_calf_lock_angle.unsqueeze(-1)
-    return torch.zeros((env.num_envs, 1), device=env.device)
-
-
 def peg_leg_foot_friction(env: "ManagerBasedRLEnv") -> torch.Tensor:
     """고장 다리 발 마찰 계수를 반환합니다."""
     if os.getenv("GO1_HIDE_PRIVILEGED_INJURY", "0").strip().lower() in {"1", "true", "yes", "on"}:

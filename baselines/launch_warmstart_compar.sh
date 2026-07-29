@@ -2,7 +2,7 @@
 # Phase 2 of the pipeline, WARM-STARTED from the SAME clean phase1
 # (models/phase1_mlp_s42). This trains BOTH the proposed method and its controls --
 # they are the same pipeline and differ only in the impaired-limb reward:
-#   antalgic : nociceptor pain (exp, eq.4)      GO1_PAIN_WEIGHT=-0.05  SYM=0   <-- PROPOSED
+#   antalgic : nociceptor pain (exp, eq.4)      GO1_PAIN_WEIGHT=-0.02  SYM=0   <-- PROPOSED
 #   faulttol : no pain, alive bonus only        GO1_PAIN_WEIGHT=0      SYM=0       control
 #   symmetry : no pain, mirror-symmetry penalty GO1_PAIN_WEIGHT=0      SYM=-2.0    control
 # Maximally controlled: identical phase1 init, environment, injury model, viability
@@ -21,7 +21,7 @@ REPO="$(cd "$BASE_DIR/.." && pwd)"; SCRIPTS="$REPO/scripts/rsl_rl"
 cd "$SCRIPTS"
 
 case "$PARADIGM" in
-  antalgic) PAIN=-0.05; SYM=0.0 ;;
+  antalgic) PAIN=-0.02; SYM=0.0 ;;   # -0.02 = mildest pain that off-loads (84%) with load conserved (dose-response)
   faulttol) PAIN=0.0;   SYM=0.0 ;;
   symmetry) PAIN=0.0;   SYM=-2.0 ;;
   *) echo "PARADIGM must be antalgic|faulttol|symmetry"; exit 1 ;;

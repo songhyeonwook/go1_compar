@@ -1,49 +1,49 @@
 #!/bin/bash
 # =============================================================================
-# Phase 1 / Phase 2 teacher training — THE single entry point (train.py wrapper).
+# Phase 1 / Phase 2 teacher 학습 — 유일한 진입점 (train.py 래퍼).
 # =============================================================================
-# Despite the name this trains BOTH phases; Phase 1 is just the special case with
-# no injury and no pain. baselines/launch_phase1.sh calls it with
-# GO1_PROB_PEG_LEG=0, GO1_PAIN_WEIGHT=0, GO1_USE_PEG_LEG_CURRICULUM=0 and the
-# viability floor off. Sharing one entry point is deliberate: it makes it
-# impossible for Phase 1 and Phase 2 to drift apart in architecture or
-# observation dimensions, which is exactly what the warm-start requires.
+# 이름과 달리 이 스크립트는 두 phase 를 모두 학습합니다. Phase 1 은 부상도
+# 통증도 없는 특수 케이스일 뿐입니다: baselines/launch_phase1.sh 가
+# GO1_PROB_PEG_LEG=0, GO1_PAIN_WEIGHT=0, GO1_USE_PEG_LEG_CURRICULUM=0 에
+# viability floor 를 끈 채로 이 스크립트를 호출합니다. 진입점을 하나로
+# 공유하는 것은 의도된 설계입니다: Phase 1 과 Phase 2 가 아키텍처나 관측
+# 차원에서 어긋나는 일이 원천적으로 불가능해지며, 이것이 바로 warm-start 가
+# 요구하는 조건입니다.
 #
-# This script contains no learning logic — it only resolves the warm-start and
-# sets the GO1_* environment that go1_lab_env_cfg.py reads to assemble the
-# reward/injury/curriculum, then calls train.py. It is effectively a config file
-# that happens to be written in bash.
+# 이 스크립트에는 학습 로직이 없습니다 — warm-start 경로를 결정하고,
+# go1_lab_env_cfg.py 가 읽어 보상/부상/커리큘럼을 조립하는 GO1_* 환경변수를
+# 설정한 뒤 train.py 를 호출할 뿐입니다. 사실상 bash 로 작성된 설정 파일입니다.
 #
-# Every knob below is `${VAR:-default}`, so a launcher in baselines/ overrides it
-# simply by exporting it. Knobs whose value merely repeats the go1_lab_env_cfg.py
-# default are omitted rather than restated, EXCEPT where the value documents a
-# load-bearing experimental choice (injury model, curriculum, eq.3 weights, the
-# 3-paradigm comparison variable) — those stay visible even when redundant.
-# The defaults here are the paper configuration:
+# 아래의 모든 knob 은 `${VAR:-default}` 형태라, baselines/ 의 런처가 export 만
+# 하면 오버라이드됩니다. go1_lab_env_cfg.py 기본값을 단순 반복하는 knob 은
+# 생략하되, 값 자체가 핵심 실험 선택(부상 모델, 커리큘럼, eq.3 가중치,
+# 3-패러다임 비교 변수)을 문서화하는 경우는 중복이어도 남겨둡니다.
+# 여기의 기본값이 곧 논문 구성입니다:
 #
 #   reward (eq.3)  r = W_task r_task(v,v*) - W_energy ||tau||^2 - W_pain C_pain(Fz)
 #   pain   (eq.4)  C_pain(Fz) = Pbase 1[contact] + max(0, exp(a (Fz - Fth)) - 1)
-#                  Pbase = 0.05, Fth = 10 N, a = 2.0   (FIXED, never severity-scaled)
+#                  Pbase = 0.05, Fth = 10 N, a = 2.0   (고정, severity 스케일링 없음)
 #
-# The prescriptive gait terms (contact/duty/diagonal asymmetry, trot_sync,
-# front-rear load, leg duty target, intact overload) are all 0 by default: the
-# paper's claim is that the antalgic pattern EMERGES from eq.3 alone, so nothing
-# may prescribe a target gait, duty factor or asymmetry. Severity is handled by
-# MORPHOLOGY (the splint's eq.1-2 Jacobian), not by scaling the pain function.
+# 처방적 gait 항들(contact/duty/diagonal asymmetry, trot_sync, front-rear
+# load, intact overload)은 전부 기본 0 입니다: 논문의 주장은 antalgic 패턴이
+# eq.3 만으로 창발한다는 것이므로, 어떤 항도 목표 gait/duty factor/비대칭을
+# 처방해서는 안 됩니다. severity 는 통증 함수 스케일링이 아니라 형태학
+# (부목의 eq.1-2 Jacobian)으로 처리합니다.
 #
-# The one exception is the load-bearing viability floor
-# (GO1_INJURED_*_NONUSE_*): it prevents total non-use of the impaired limb so
-# the paradigms are compared on gait PATTERN rather than use-vs-nonuse. It is
-# applied identically to every paradigm — document this choice in the paper.
+# 유일한 예외는 load-bearing viability floor (GO1_INJURED_*_NONUSE_*) 입니다:
+# 부상 다리의 완전 비사용(non-use)을 막아, 패러다임 비교가 사용-vs-비사용이
+# 아니라 gait 패턴 차원에서 이루어지게 합니다. 모든 패러다임에 동일하게
+# 적용되며 — 이 선택은 논문에 명시할 것.
 #
-# Balance shaping (flat_orientation + relaxed base height) exists because a
-# short rigid peg otherwise reaches the ground by ROLLING the trunk into the
-# injured corner until it tips over; penalising trunk-tilt ANGLE and allowing a
-# slight squat lets it load the peg at a LEVEL posture instead.
+# Balance shaping (flat_orientation + 완화된 base height) 이 있는 이유:
+# 짧고 단단한 peg 는 그대로 두면 몸통을 부상 쪽 모서리로 굴려(ROLLING) 땅에
+# 닿으려다 넘어집니다(bad_orientation). 몸통 기울기 각도를 페널티하고 약간의
+# 스쿼트를 허용하면, 수평 자세를 유지한 채 peg 에 하중을 실을 수 있게 됩니다.
 #
-# Usage: always via baselines/launch_*.sh, which supply the per-experiment
-# overrides (PD gains, command ranges, splint geometry, run name). Direct use:
-#   GO1_NO_WARMSTART=1 PHASE2_RUN_NAME=my_run ./train_phase2.sh   # from scratch
+# 사용법: 항상 baselines/launch_*.sh 를 통해 실행합니다. 런처가 실험별
+# 오버라이드(PD 게인, 명령 속도 범위, 부목 기하, run name)를 공급합니다.
+# 직접 실행:
+#   GO1_NO_WARMSTART=1 PHASE2_RUN_NAME=my_run ./train_phase2.sh   # 처음부터
 #   PHASE1_CKPT=/path/model_5999.pt PHASE2_RUN_NAME=my_run ./train_phase2.sh
 # =============================================================================
 

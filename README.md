@@ -67,7 +67,7 @@ GO1_BIOMECH_DUMP=$PWD/../scripts/rsl_rl/biomech/ws.npz \
 
 | 패러다임 | 환부 보상 | 설정 | 기대 direction-of-change |
 |---|---|---|---|
-| **antalgic** (제안) | 통각 penalty `C_pain(F)` | `GO1_PAIN_WEIGHT=-0.05` | **>80%** |
+| **antalgic** (제안) | 통각 penalty `C_pain(F)` | `GO1_PAIN_WEIGHT=-0.02` | **>80%** |
 | **fault-tolerant** | 없음 (alive bonus만) | `GO1_PAIN_WEIGHT=0` | **<40%** |
 | **symmetry** | 좌우대칭 penalty `-λ‖q−M(q)‖²` | `GO1_SYMMETRY_PENALTY_WEIGHT=-2.0` | **<50%** |
 

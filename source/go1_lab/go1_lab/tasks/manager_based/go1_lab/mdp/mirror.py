@@ -30,12 +30,6 @@ from tensordict import TensorDict
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Go1 Joint Mirroring Constants
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-# ⚠️ Go1 actual joint order is PER-TYPE (verified from robot.data.joint_names):
-#   [FL_hip, FR_hip, RL_hip, RR_hip, FL_thigh, FR_thigh, RL_thigh, RR_thigh,
-#    FL_calf, FR_calf, RL_calf, RR_calf]  (indices 0..11)
-# L-R mirror swaps FL↔FR and RL↔RR within each joint type:
-#   hip:   0↔1, 2↔3   thigh: 4↔5, 6↔7   calf: 8↔9, 10↔11
 JOINT_MIRROR_IDX = [1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10]
 
 # 12-joint sign: hip abduction (indices 0,1,2,3) flips (-1); thigh+calf keep (+1)

@@ -441,8 +441,6 @@ def randomize_peg_leg_actuation(
     # 부목 무릎을 compliant spring으로 (GO1_SPLINT_CALF_STIFFNESS) — 충격 흡수 → 적재 가능
     apply_peg_leg_calf_stiffness(env, robot, env_ids_t, sampled_leg_idx)
 
-    num_joints = len(robot.data.joint_names)
-
     # default_joint_pos의 원본 저장 (최초 1회)
     if hasattr(robot.data, "default_joint_pos"):
         if env._peg_leg_default_joint_pos_ref is None:

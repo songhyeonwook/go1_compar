@@ -71,16 +71,6 @@ def _peg_hip_torque_scale() -> float:
         return 0.05
 
 
-def _peg_weaken_joint_names(leg_idx: int) -> list[str]:
-    which = os.getenv("GO1_PEG_WEAKEN_JOINTS", "hip").strip().lower()
-    names: list[str] = []
-    if "hip" in which:
-        names.append(HIP_JOINT_NAMES[leg_idx])
-    if "thigh" in which:
-        names.append(THIGH_JOINT_NAMES[leg_idx])
-    return names
-
-
 def _ensure_hip_effort_cache(env: "ManagerBasedRLEnv", robot: Articulation) -> None:
     """actuator별 nominal effort_limit 스냅샷과 leg→(actuator, col) 매핑을 1회 캐싱."""
     if getattr(env, "_peg_hip_effort_ready", False):

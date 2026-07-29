@@ -128,22 +128,6 @@ import go1_lab.tasks  # noqa: F401
 # Import peg leg helper
 from go1_lab.tasks.manager_based.go1_lab.mdp.events import _get_peg_leg_per_env
 
-def calculate_duty_factor(contact_history, threshold=1.0):
-    """
-    contact_history: (steps, num_legs) tensor or array
-    Returns: (num_legs,) array of duty factors (0.0 to 1.0)
-    """
-    if isinstance(contact_history, torch.Tensor):
-        contact_history = contact_history.cpu().numpy()
-    
-    steps, num_legs = contact_history.shape
-    if steps == 0:
-        return np.zeros(num_legs)
-        
-    # Count contacts
-    contact_counts = np.sum(contact_history > threshold, axis=0)
-    return contact_counts / steps
-
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
     """Play with RSL-RL agent and compute duty factor."""

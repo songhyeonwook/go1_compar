@@ -21,19 +21,18 @@ from isaaclab_rl.rsl_rl import (
 
 @configclass
 class TeacherMlpRunnerCfg(RslRlOnPolicyRunnerCfg):
-    """Phase 1,2 antalgic teacher — feedforward MLP, NO mirror augmentation.
+    """Phase 1/2 antalgic teacher — feedforward MLP, mirror augmentation 미사용.
 
-    In canonical RMA the teacher is FEEDFORWARD (it observes the privileged state
-    directly, so needs no memory); recurrence belongs to the student adaptation
-    module. The deployed student (Phase 3) stays recurrent (LSTM).
+    정통 RMA 에서 teacher 는 FEEDFORWARD 입니다 (privileged state 를 직접
+    관측하므로 메모리가 불필요). 시계열 재귀(recurrence)는 student 의
+    adaptation module 몫이며, 배포되는 student(Phase 3)는 LSTM 을 유지합니다.
 
-    Phase 1 (launch_phase1.sh) uses this same runner cfg with the healthy env, so
-    the Phase-2 warm-start is dimension/architecture compatible. Mirror data
-    augmentation is not used: under active load-bearing it drives the policy to
-    the symmetric non-use optimum instead of the antalgic partial loading.
-    Left/right consistency for deployment is restored by canonicalization (mirror
-    the obs/action for right-side injuries at inference), and for the paper by
-    the n-seed aggregate.
+    Phase 1(launch_phase1.sh)도 healthy env 에서 이 runner cfg 를 그대로
+    사용하므로, Phase 2 warm-start 가 차원/아키텍처 호환됩니다. Mirror data
+    augmentation 은 사용하지 않습니다: 능동적 하중 부하(load-bearing) 하에서는
+    정책을 antalgic 부분 하중이 아닌 좌우 대칭 비사용(non-use) 최적해로
+    몰아가기 때문입니다. 배포 시 좌우 일관성은 canonicalization(오른쪽 부상이면
+    추론 시 obs/action 미러링)으로, 논문에서는 n-seed 집계로 확보합니다.
     """
 
     num_steps_per_env = 24
@@ -88,13 +87,6 @@ class DistillRunnerCfg(RslRlDistillationRunnerCfg):
     """
 
     num_steps_per_env = 32
-    # Phase 2 teacher 가 15000 iter 로 학습되었을 때, student 가 교사의 latent 를
-    # 5가지 시나리오(정상 + FL/FR/RL/RR 부상) 전체에 걸쳐 모사하기 위해 권장 12000 iter.
-    # 근거:
-    #   - sample-equivalent: Phase 2(15k × 24 × 4096) = 1.47B → Phase 3 에서 동일 경험 확보에
-    #     약 11250 iter (32 × 4096) 필요. 12000 은 그에 소폭 여유 추가.
-    #   - 다중 시나리오 LSTM distillation 은 60-80% of teacher time 이 경험적 sweet spot.
-    #   - Loss plateau 에 도달하면 save_interval 로 저장된 중간 체크포인트에서 조기 중단 가능.
     max_iterations = 12000
     save_interval = 100
     experiment_name = "unitree_go1_rough_student"
@@ -116,20 +108,12 @@ class DistillRunnerCfg(RslRlDistillationRunnerCfg):
         rnn_type="lstm",
         rnn_hidden_dim=256,
         rnn_num_layers=1,
-        # The Phase-2 teacher is a FEEDFORWARD MLP (TeacherMlp pivot), so the
-        # distillation must load it as non-recurrent (recurrence lives only in the
-        # student LSTM). teacher_recurrent=True would expect an RNN the MLP teacher
-        # checkpoint does not have.
         teacher_recurrent=False,
     )
 
     algorithm = RslRlDistillationAlgorithmCfg(
         num_learning_epochs=5,
-        # 1e-3는 LSTM distillation에서 불안정/편향(한쪽 다리만 잘 배우는 현상)을
-        # 유발할 수 있음. 5e-4로 낮춰 수렴을 안정화.
         learning_rate=5.0e-4,
-        # BPTT 윈도우: 20→32로 늘려 보행 주기(약 20~30 step) + 부상 적응 long-horizon 패턴을
-        # Student가 모사할 수 있도록 함. num_steps_per_env=32와 정렬.
         gradient_length=32,
         max_grad_norm=1.0,
         optimizer="adam",

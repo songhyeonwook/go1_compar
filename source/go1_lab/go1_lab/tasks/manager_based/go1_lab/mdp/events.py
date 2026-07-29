@@ -5,10 +5,13 @@
 
 """이벤트 함수들 - 의족(Peg Leg) 시나리오를 위한 랜덤화 함수들.
 
-⚠️ 핵심 설계 원칙 (ActuatorNetMLP 호환):
-  Go1 로봇은 Explicit Actuator(ActuatorNetMLP)를 사용합니다.
-  이 모델에서는 PhysX 내부 PD 제어기가 비활성화되어 있으므로,
-  robot.data.joint_stiffness에 값을 쓰는 것은 아무런 물리적 효과가 없습니다.
+⚠️ 핵심 설계 원칙 (explicit actuator 호환):
+  Go1은 explicit actuator를 사용합니다 — 기본은 ActuatorNetMLP, 실험 구성
+  (GO1_PD_ACTUATOR=1)에서는 DCMotor PD(Kp~20, Kd~0.5). 두 경우 모두 PhysX
+  내부 PD 제어기가 비활성이므로, robot.data.joint_stiffness(PhysX 게인)에
+  값을 쓰는 것은 아무런 물리적 효과가 없습니다. (반면 DCMotor의
+  actuator.stiffness/damping 버퍼는 토크 계산에 직접 쓰이므로
+  apply_peg_leg_calf_stiffness가 이를 이용해 부목 무릎을 compliant하게 만듭니다.)
 
   관절을 "고정"하려면:
     (1) default_joint_pos를 lock angle로 설정 (action=0일 때 target=lock_angle이 되도록)
@@ -52,8 +55,8 @@ GO1_MIN_SPLINT_LENGTH = 0.08  # 기구학적 하한
 #   "additionally reducing the affected hip-joint torque limits to 5% of
 #    nominal to mimic peri-articular damage."
 #
-# Go1은 ActuatorNetMLP(explicit actuator)를 쓰며, 매 substep compute()에서
-#   applied_effort = clip(network_torque, -effort_limit, +effort_limit)
+# Go1의 explicit actuator(ActuatorNetMLP/DCMotor 공통)는 매 substep compute()에서
+#   applied_effort = clip(computed_torque, -effort_limit, +effort_limit)
 # 로 토크를 클리핑합니다. 따라서 부상 다리 hip joint의 `effort_limit`을
 # nominal(23.7N·m)의 5%로 낮추면 actuator가 자동으로 매 스텝 토크를 5%로
 # 제한합니다 — 논문의 "torque limit 5%"와 정확히 일치하는 구현입니다.
@@ -369,16 +372,15 @@ def randomize_peg_leg_actuation(
     asset_cfg: SceneEntityCfg,
     prob_peg_leg: float = 1.0,
     prob_joint_disabled: float = 1.0,
-    actuation_mode: str = "locked",
     locked_joint_angle_range: tuple[float, float] = (-1.5, -0.8),
     splint_length_range: tuple[float, float] | None = None,
     foot_friction_range: tuple[float, float] = (0.2, 1.2),
     target_leg: str = "random",
 ):
-    """의족 시나리오를 위한 리셋 이벤트 (ActuatorNetMLP 호환).
+    """의족 시나리오를 위한 리셋 이벤트 (explicit actuator 호환).
 
-    ⚠️ Go1은 ActuatorNetMLP(Explicit Actuator)를 사용합니다.
-    joint_stiffness/damping에 값을 써도 물리적 효과가 없습니다!
+    ⚠️ Go1은 explicit actuator를 사용하므로 PhysX 게인
+    (robot.data.joint_stiffness/damping)에 값을 써도 물리적 효과가 없습니다.
 
     대신 이 함수는:
       (1) 부상 다리/부목 길이를 샘플링하여 메타데이터 버퍼에 저장
@@ -472,9 +474,9 @@ def randomize_peg_leg_actuation(
                 )
             )
 
-    # ━━━ calf joint 인덱스 매핑 (벡터화) ━━━
-    # Go1 관절 순서: [FL_hip, FL_thigh, FL_calf, FR_hip, FR_thigh, FR_calf, ...]
-    # calf joint index = leg_idx * 3 + 2
+    # ━━━ calf joint 인덱스 매핑 ━━━
+    # 관절 순서는 per-TYPE(hip 4, thigh 4, calf 4)이라 per-leg 공식(leg*3+2)은
+    # 틀립니다. 항상 joint_names에서 이름으로 리졸브합니다.
     env._peg_leg_calf_joint_index[env_ids_t] = -1
 
     for local_i, env_id_t in enumerate(env_ids_t):
@@ -497,7 +499,7 @@ def randomize_peg_leg_actuation(
 
         # (1) default_joint_pos를 lock angle로 설정
         #     → action=0일 때: target = default_pos + 0*scale = lock_angle
-        #     → ActuatorNetMLP가 target ≈ current이면 토크 ≈ 0 → 관절 고정
+        #     → actuator가 target ≈ current이면 토크 ≈ 0 → 관절 고정
         if (
             hasattr(robot.data, "default_joint_pos")
             and robot.data.default_joint_pos.ndim >= 2
@@ -515,13 +517,10 @@ def randomize_peg_leg_actuation(
         ):
             robot.data.joint_pos_target[env_id, joint_idx] = target_lock_angle
 
-    # ━━━ 마찰 복원 (reset envs → nominal) : 재적용보다 먼저 ━━━
-    # effort_limit / calf stiffness 와 동일한 "복원 후 재적용" 패턴입니다. 아래
-    # 루프는 부상 발에만 마찰을 쓰고 복원 pass 가 없었기에, 지난 에피소드에
-    # 부상이었던 env 가 healthy 로 돌아와도 낮은 peg 마찰이 그대로 남았습니다
+    # ━━━ 마찰 복원 (reset envs → nominal) : 
+    # effort_limit / calf stiffness 와 동일한 "복원 후 재적용" 패턴입니다. 
     # (기본 whole-robot 모드에서는 로봇 전체가 영구히 미끄러움 → healthy 인데
-    # obs friction=0 과도 불일치). 최초 1회 nominal material 을 스냅샷하고(=startup
-    # domain-rand 결과), 매 리셋마다 리셋 대상 env 를 nominal 로 되돌린 뒤,
+    # obs friction=0 과도 불일치). 매 리셋마다 리셋 대상 env 를 nominal 로 되돌린 뒤,
     # 아래 루프가 부상 발에만 peg 마찰을 덮어씁니다.
     try:
         _phys_view = robot.root_physx_view
@@ -647,9 +646,6 @@ def enforce_peg_leg_constraints(
 # =====================================================================
 # 커리큘럼 함수
 # =====================================================================
-
-# Go1 기본 calf 각도 -1.5 rad → 다리 유효 길이
-_GO1_DEFAULT_LEG_LENGTH = 0.312  # calf_angle_to_splint_length(tensor(-1.5))
 
 
 def peg_leg_curriculum(

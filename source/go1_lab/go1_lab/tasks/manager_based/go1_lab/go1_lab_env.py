@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Go1 Lab 환경 - ActuatorNetMLP 호환 Peg-Leg Action Masking."""
+"""Go1 Lab 환경 - explicit actuator 호환 Peg-Leg Action Masking."""
 
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ from .go1_lab_env_cfg import Go1LabEnvCfg
 class Go1LabEnv(ManagerBasedRLEnv):
     """Go1 Lab 환경 (ManagerBasedRLEnv 확장).
 
-    ⚠️ ActuatorNetMLP 호환을 위한 핵심 오버라이드:
-      Go1은 Explicit Actuator(ActuatorNetMLP)를 사용하므로,
-      joint_stiffness로는 관절을 고정할 수 없습니다.
+    ⚠️ explicit actuator 호환을 위한 핵심 오버라이드:
+      Go1은 explicit actuator(기본 ActuatorNetMLP, GO1_PD_ACTUATOR=1이면 DCMotor PD)를
+      사용하므로 PhysX 게인(robot.data.joint_stiffness)으로는 관절을 고정할 수 없습니다.
       
       대신 step()을 오버라이드하여:
         (1) process_action() 전에 부상 calf joint의 action을 0으로 마스킹

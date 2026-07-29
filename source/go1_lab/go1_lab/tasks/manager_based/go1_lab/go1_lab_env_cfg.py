@@ -528,7 +528,6 @@ class Go1LabEnvCfg(UnitreeGo1RoughEnvCfg):
                 "prob_peg_leg": prob_peg_leg,
                 "target_leg": target_leg,
                 "prob_joint_disabled": 1.0,
-                "actuation_mode": "locked",
                 "splint_length_range": (splint_min, splint_max),
                 "foot_friction_range": (foot_friction_min, foot_friction_max),
             },

@@ -37,10 +37,6 @@ JOINT_MIRROR_SIGN = torch.tensor(
     [-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 )
 
-# 다리 인덱스 미러: FL(0) ↔ FR(1), RL(2) ↔ RR(3), 정상(-1) → -1 유지
-LEG_MIRROR_MAP = {-1: -1, 0: 1, 1: 0, 2: 3, 3: 2}
-
-
 def _get_joint_mirror_sign(device: torch.device) -> torch.Tensor:
     """디바이스에 맞는 미러 부호 텐서를 반환합니다."""
     return JOINT_MIRROR_SIGN.to(device)
@@ -121,22 +117,6 @@ def mirror_obs(obs: torch.Tensor, obs_structure: dict | None = None) -> torch.Te
 def mirror_action(action: torch.Tensor) -> torch.Tensor:
     """12차원 행동 벡터를 좌우 미러링합니다."""
     return mirror_joint_tensor(action)
-
-
-def mirror_peg_leg_index(peg_idx: torch.Tensor) -> torch.Tensor:
-    """부상 다리 인덱스를 좌우 미러링합니다.
-
-    Args:
-        peg_idx: (batch,) 부상 인덱스 (-1=정상, 0=FL, 1=FR, 2=RL, 3=RR)
-
-    Returns:
-        미러링된 인덱스 (-1=정상, 0→1, 1→0, 2→3, 3→2)
-    """
-    result = peg_idx.clone()
-    for src, dst in LEG_MIRROR_MAP.items():
-        if src != dst:
-            result[peg_idx == src] = dst
-    return result
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

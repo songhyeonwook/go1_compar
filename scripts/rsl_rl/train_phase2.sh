@@ -1,14 +1,19 @@
 #!/bin/bash
 # =============================================================================
-# Phase 1 / Phase 2 teacher 학습 — 유일한 진입점 (train.py 래퍼).
+# Phase 1 / 2 / 3 학습 — 유일한 진입점 (train.py 래퍼).
 # =============================================================================
-# 이름과 달리 이 스크립트는 두 phase 를 모두 학습합니다. Phase 1 은 부상도
-# 통증도 없는 특수 케이스일 뿐입니다: baselines/launch_phase1.sh 가
-# GO1_PROB_PEG_LEG=0, GO1_PAIN_WEIGHT=0, GO1_USE_PEG_LEG_CURRICULUM=0 에
-# viability floor 를 끈 채로 이 스크립트를 호출합니다. 진입점을 하나로
-# 공유하는 것은 의도된 설계입니다: Phase 1 과 Phase 2 가 아키텍처나 관측
-# 차원에서 어긋나는 일이 원천적으로 불가능해지며, 이것이 바로 warm-start 가
-# 요구하는 조건입니다.
+# 이름과 달리 이 스크립트는 세 phase 를 모두 담당합니다. GO1_PHASE 로 분기:
+#   teacher (기본) : Phase 1(healthy) / Phase 2(antalgic) teacher-MLP 학습.
+#                    Phase 1 은 GO1_PROB_PEG_LEG=0, GO1_PAIN_WEIGHT=0,
+#                    GO1_USE_PEG_LEG_CURRICULUM=0 인 특수 케이스일 뿐입니다
+#                    (baselines/launch_phase1.sh).
+#   student        : Phase 3 distillation. 동결된 Phase 2 teacher(TEACHER_CKPT)를
+#                    LSTM student 로 증류 (baselines/launch_phase3_*.sh).
+# 진입점을 하나로 공유하는 것은 의도된 설계입니다: 세 phase 의 env/관측 구성이
+# 어긋나는 일이 원천적으로 불가능해집니다 — Phase 2 warm-start 와 Phase 3
+# distillation 모두, teacher 가 학습된 것과 정확히 같은 환경을 요구합니다.
+# phase 별 차이는 (a) run identity, (b) checkpoint 로딩, (c) train.py 호출뿐이고
+# 아래 모든 GO1_* env 설정은 세 phase 가 공유합니다.
 #
 # 이 스크립트에는 학습 로직이 없습니다 — warm-start 경로를 결정하고,
 # go1_lab_env_cfg.py 가 읽어 보상/부상/커리큘럼을 조립하는 GO1_* 환경변수를
@@ -51,33 +56,66 @@ set -euo pipefail
 TRAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$TRAIN_DIR"
 
+# --- phase selection ---------------------------------------------------------
+# 이 스크립트는 Phase 1/2 teacher 뿐 아니라 Phase 3 student distillation 도
+# 담당합니다 (GO1_PHASE=student). env 구성을 한 곳에서 공유해야 student 가
+# teacher 와 물리적으로 동일한 환경에서 distill 되기 때문입니다 — 아래 모든
+# GO1_* export 는 teacher/student 가 공유하고, 분기는 (a) run identity,
+# (b) checkpoint 로딩, (c) 최종 train.py 호출 뿐입니다.
+IS_STUDENT=0
+[ "${GO1_PHASE:-teacher}" = "student" ] && IS_STUDENT=1
+
 # --- run identity ------------------------------------------------------------
 TASK="${TASK:-Template-Go1-Lab-v0}"
-EXP_NAME="${EXP_NAME:-unitree_go1_rough_teacher}"
-RUN_NAME="${PHASE2_RUN_NAME:-phase2_teacher}"
-export AGENT="${AGENT:-rsl_rl_teacher_mlp_cfg_entry_point}"
+if [ "$IS_STUDENT" = "1" ]; then
+    EXP_NAME="${EXP_NAME:-unitree_go1_rough_student}"
+    RUN_NAME="${PHASE3_RUN_NAME:-phase3_student}"
+    export AGENT="${AGENT:-rsl_rl_distill_cfg_entry_point}"
+    MAX_ITER="${PHASE3_MAX_ITER:-12000}"
+else
+    EXP_NAME="${EXP_NAME:-unitree_go1_rough_teacher}"
+    RUN_NAME="${PHASE2_RUN_NAME:-phase2_teacher}"
+    export AGENT="${AGENT:-rsl_rl_teacher_mlp_cfg_entry_point}"
+    MAX_ITER="${PHASE2_MAX_ITER:-6000}"
+fi
 NUM_ENVS="${NUM_ENVS:-4096}"
-MAX_ITER="${PHASE2_MAX_ITER:-6000}"
 SEED="${SEED:-42}"
 
-# --- warm-start --------------------------------------------------------------
-# GO1_NO_WARMSTART=1 trains from scratch; this is how Phase 1 is trained, since
-# there is nothing to inherit from yet. Every Phase 2 run instead warm-starts,
-# so PHASE1_CKPT must point at the Phase 1 checkpoint
-# (baselines/launch_warmstart_*.sh resolve it, defaulting to models/).
-PHASE1_CKPT="${PHASE1_CKPT:-}"
-if [ "${GO1_NO_WARMSTART:-0}" = "1" ]; then
-    WS_ARGS=()
-    PHASE1_CKPT="(none: from scratch)"
-elif [ -z "$PHASE1_CKPT" ]; then
-    echo "ERROR: warm-start requested but PHASE1_CKPT is empty."
-    echo "       set PHASE1_CKPT=/path/to/model_N.pt, or GO1_NO_WARMSTART=1 for from-scratch."
-    exit 1
-elif [ ! -f "$PHASE1_CKPT" ]; then
-    echo "ERROR: Phase 1 checkpoint not found: $PHASE1_CKPT"
-    exit 1
+# --- checkpoint loading ------------------------------------------------------
+# Phase 2 teacher: warm-start weights from a Phase 1 checkpoint (WS_ARGS).
+# Phase 3 student: load the FROZEN Phase 2 teacher into the distillation runner's
+#   teacher submodule (TEACHER_CKPT). The student (LSTM) is randomly initialised
+#   and learns to reproduce the teacher's latent from proprioception via MSE;
+#   --warmstart_ckpt_path is ignored for distillation, so it is not passed here.
+WS_ARGS=()
+if [ "$IS_STUDENT" = "1" ]; then
+    TEACHER_CKPT="${TEACHER_CKPT:-}"
+    if [ -z "$TEACHER_CKPT" ]; then
+        echo "ERROR: student distillation needs the Phase 2 teacher checkpoint."
+        echo "       set TEACHER_CKPT=/path/to/model_N.pt (baselines/launch_phase3_*.sh resolves it)."
+        exit 1
+    elif [ ! -f "$TEACHER_CKPT" ]; then
+        echo "ERROR: teacher checkpoint not found: $TEACHER_CKPT"
+        exit 1
+    fi
 else
-    WS_ARGS=(--warmstart_ckpt_path "$PHASE1_CKPT")
+    # GO1_NO_WARMSTART=1 trains from scratch; this is how Phase 1 is trained, since
+    # there is nothing to inherit from yet. Every Phase 2 run instead warm-starts,
+    # so PHASE1_CKPT must point at the Phase 1 checkpoint
+    # (baselines/launch_warmstart_*.sh resolve it, defaulting to models/).
+    PHASE1_CKPT="${PHASE1_CKPT:-}"
+    if [ "${GO1_NO_WARMSTART:-0}" = "1" ]; then
+        PHASE1_CKPT="(none: from scratch)"
+    elif [ -z "$PHASE1_CKPT" ]; then
+        echo "ERROR: warm-start requested but PHASE1_CKPT is empty."
+        echo "       set PHASE1_CKPT=/path/to/model_N.pt, or GO1_NO_WARMSTART=1 for from-scratch."
+        exit 1
+    elif [ ! -f "$PHASE1_CKPT" ]; then
+        echo "ERROR: Phase 1 checkpoint not found: $PHASE1_CKPT"
+        exit 1
+    else
+        WS_ARGS=(--warmstart_ckpt_path "$PHASE1_CKPT")
+    fi
 fi
 
 # --- environment / observation ----------------------------------------------
@@ -152,9 +190,14 @@ export GO1_FRONT_REAR_LOAD_DIST_WEIGHT="${GO1_FRONT_REAR_LOAD_DIST_WEIGHT:-0.0}"
 export GO1_TROT_SYNC_WEIGHT="${GO1_TROT_SYNC_WEIGHT:-0.0}"
 
 echo "-----------------------------------------------"
-echo "  Phase 2: peg-leg teacher training"
+if [ "$IS_STUDENT" = "1" ]; then
+    echo "  Phase 3: student distillation (frozen teacher -> LSTM student)"
+    echo "  teacher_ckpt=$TEACHER_CKPT"
+else
+    echo "  Phase 2: peg-leg teacher training"
+    echo "  warmstart=$PHASE1_CKPT"
+fi
 echo "  run_name=$RUN_NAME  agent=$AGENT"
-echo "  warmstart=$PHASE1_CKPT"
 echo "  num_envs=$NUM_ENVS max_iterations=$MAX_ITER seed=$SEED"
 echo "  peg_leg_prob=$GO1_PROB_PEG_LEG curriculum=$GO1_USE_PEG_LEG_CURRICULUM"
 echo "  splint_range=[$GO1_SPLINT_LENGTH_MIN, $GO1_SPLINT_LENGTH_MAX] m"
@@ -165,20 +208,39 @@ echo "  balance: flat_orientation=$GO1_FLAT_ORIENTATION_WEIGHT base_height=$GO1_
 echo "  gait_tuning=$GO1_PHASE2_GAIT_TUNING"
 echo "-----------------------------------------------"
 
-python3 train.py \
-    --task "$TASK" \
-    --agent "$AGENT" \
-    --num_envs "$NUM_ENVS" \
-    --headless \
-    --experiment_name "$EXP_NAME" \
-    --run_name "$RUN_NAME" \
-    "${WS_ARGS[@]}" \
-    --max_iterations "$MAX_ITER" \
-    --seed "$SEED" \
-    --use_peg_leg_action_mask
+if [ "$IS_STUDENT" = "1" ]; then
+    # Distillation: load the frozen Phase 2 teacher; no warm-start.
+    python3 train.py \
+        --task "$TASK" \
+        --agent "$AGENT" \
+        --num_envs "$NUM_ENVS" \
+        --headless \
+        --experiment_name "$EXP_NAME" \
+        --run_name "$RUN_NAME" \
+        --teacher_ckpt_path "$TEACHER_CKPT" \
+        --max_iterations "$MAX_ITER" \
+        --seed "$SEED" \
+        --use_peg_leg_action_mask
+else
+    python3 train.py \
+        --task "$TASK" \
+        --agent "$AGENT" \
+        --num_envs "$NUM_ENVS" \
+        --headless \
+        --experiment_name "$EXP_NAME" \
+        --run_name "$RUN_NAME" \
+        "${WS_ARGS[@]}" \
+        --max_iterations "$MAX_ITER" \
+        --seed "$SEED" \
+        --use_peg_leg_action_mask
+fi
 
 echo ""
 echo "-----------------------------------------------"
-echo "  Phase 2 complete"
+if [ "$IS_STUDENT" = "1" ]; then
+    echo "  Phase 3 complete"
+else
+    echo "  Phase 2 complete"
+fi
 echo "  Logs: $TRAIN_DIR/logs/rsl_rl/$EXP_NAME"
 echo "-----------------------------------------------"

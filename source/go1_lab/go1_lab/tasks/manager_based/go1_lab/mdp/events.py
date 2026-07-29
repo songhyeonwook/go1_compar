@@ -230,7 +230,8 @@ def _ensure_peg_leg_buffers(env: "ManagerBasedRLEnv") -> None:
             (env.num_envs,), device=env.device, dtype=torch.float32
         )
     if not hasattr(env, "_peg_leg_foot_friction"):
-        env._peg_leg_foot_friction = torch.ones(
+        # 정상 = 0 (부목 없음 sentinel), 부상 env 만 리셋 이벤트가 샘플값으로 채움
+        env._peg_leg_foot_friction = torch.zeros(
             (env.num_envs,), device=env.device, dtype=torch.float32
         )
     if not hasattr(env, "_peg_leg_default_joint_pos_ref"):
@@ -431,6 +432,15 @@ def randomize_peg_leg_actuation(
         sampled_lock_angles = torch.full_like(sampled_lock_angles, float(_fixed_calf))
         sampled_lengths = calf_angle_to_splint_length(sampled_lock_angles)
 
+
+    healthy = sampled_leg_idx < 0
+    sampled_lengths = torch.where(
+        healthy, torch.zeros_like(sampled_lengths), sampled_lengths
+    )
+    sampled_foot_friction = torch.where(
+        healthy, torch.zeros_like(sampled_foot_friction), sampled_foot_friction
+    )
+
     env._peg_leg_index[env_ids_t] = sampled_leg_idx
     env._peg_leg_calf_lock_angle[env_ids_t] = sampled_lock_angles
     env._peg_leg_splint_length[env_ids_t] = sampled_lengths
@@ -461,7 +471,6 @@ def randomize_peg_leg_actuation(
                     env_ids_t.numel(), -1
                 )
             )
-        # 1D fallback은 일반적으로 Go1에서 사용하지 않지만 안전을 위해 유지
 
     # ━━━ calf joint 인덱스 매핑 (벡터화) ━━━
     # Go1 관절 순서: [FL_hip, FL_thigh, FL_calf, FR_hip, FR_thigh, FR_calf, ...]
@@ -505,6 +514,27 @@ def randomize_peg_leg_actuation(
             and robot.data.joint_pos_target.ndim >= 2
         ):
             robot.data.joint_pos_target[env_id, joint_idx] = target_lock_angle
+
+    # ━━━ 마찰 복원 (reset envs → nominal) : 재적용보다 먼저 ━━━
+    # effort_limit / calf stiffness 와 동일한 "복원 후 재적용" 패턴입니다. 아래
+    # 루프는 부상 발에만 마찰을 쓰고 복원 pass 가 없었기에, 지난 에피소드에
+    # 부상이었던 env 가 healthy 로 돌아와도 낮은 peg 마찰이 그대로 남았습니다
+    # (기본 whole-robot 모드에서는 로봇 전체가 영구히 미끄러움 → healthy 인데
+    # obs friction=0 과도 불일치). 최초 1회 nominal material 을 스냅샷하고(=startup
+    # domain-rand 결과), 매 리셋마다 리셋 대상 env 를 nominal 로 되돌린 뒤,
+    # 아래 루프가 부상 발에만 peg 마찰을 덮어씁니다.
+    try:
+        _phys_view = robot.root_physx_view
+        _mats = _phys_view.get_material_properties()
+        if getattr(env, "_peg_nominal_material", None) is None:
+            # 첫 리셋 시점의 material = startup DR 결과 = healthy nominal
+            env._peg_nominal_material = _mats.clone()
+        _ids = env_ids_t.to(_mats.device)
+        _mats[_ids] = env._peg_nominal_material.to(_mats.device)[_ids]
+        _phys_view.set_material_properties(_mats, _ids)
+    except Exception:
+        # 백엔드/버전별 API 차이 시 기존 동작으로 폴백 (복원 미적용)
+        pass
 
     # 마찰 랜덤화는 API 차이로 실패할 수 있으므로 try/except로 안전 처리
     for local_i, env_id_t in enumerate(env_ids_t):
@@ -585,16 +615,17 @@ def enforce_peg_leg_constraints(
     injured_lock_angles = lock_angles[injured_env_ids]  # (N,)
 
     # ━━━ (1) Action Masking ━━━
-    # action_manager의 내부 action 버퍼에서 부상 calf joint의 action을 0으로 강제
-    # Go1: action dim = 12 (4 legs × 3 joints), calf = leg_idx * 3 + 2
+    # action_manager의 내부 action 버퍼에서 부상 calf joint의 action을 0으로 강제.
+    # ⚠️ Go1 관절/action 순서는 per-TYPE(hip 4, thigh 4, calf 4)이므로 per-leg
+    # 공식 (leg*3+2) 은 calf 가 아닌 엉뚱한 healthy 관절을 가리킵니다 → 이름 기반으로
+    # 리졸브된 _peg_leg_calf_joint_index(위에서 injured_calf_joints 로 선택)를
+    # 그대로 사용합니다. 아래 (2) joint 고정부와 동일한 인덱스여야 일관됩니다.
     try:
-        # action_manager._action은 process_action()에서 저장된 raw action
+        # action_manager.action은 process_action()에서 저장된 raw action
         action_buf = env.action_manager.action
         if action_buf is not None and action_buf.ndim == 2:
-            peg_legs = peg_leg_idx[injured_env_ids]
-            calf_action_indices = peg_legs * 3 + 2  # Go1: hip=0, thigh=1, calf=2
-            # 벡터화 인덱싱
-            action_buf[injured_env_ids, calf_action_indices] = 0.0
+            # 벡터화 인덱싱 (per-type calf 인덱스, 8~11 범위)
+            action_buf[injured_env_ids, injured_calf_joints] = 0.0
     except Exception:
         pass
 

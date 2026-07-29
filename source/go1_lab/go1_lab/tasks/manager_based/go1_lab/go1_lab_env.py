@@ -132,8 +132,9 @@ class Go1LabEnv(ManagerBasedRLEnv):
             calf_action_idx = self._peg_leg_calf_joint_index[injured_envs]
             valid = calf_action_idx >= 0
             action[injured_envs[valid], calf_action_idx[valid]] = 0.0
-        else:
-            action[injured_envs, peg_idx[injured_envs] * 3 + 2] = 0.0
+        # else: 이름 기반 인덱스가 없으면 마스킹을 건너뜁니다. per-leg 공식
+        # (leg*3+2) 은 per-TYPE 순서에서 엉뚱한 healthy 관절을 죽이므로, 잘못된
+        # 마스킹보다 no-op 가 안전합니다 (_ensure_peg_leg_buffers 이후에는 항상 존재).
         return action
 
     def _enforce_peg_leg_joint_targets(self) -> None:

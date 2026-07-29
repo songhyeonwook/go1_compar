@@ -30,12 +30,12 @@ def peg_leg_one_hot(env: "ManagerBasedRLEnv") -> torch.Tensor:
 
 
 def peg_leg_foot_friction(env: "ManagerBasedRLEnv") -> torch.Tensor:
-    """고장 다리 발 마찰 계수를 반환합니다."""
+    """고장 다리 부목 발 마찰 계수를 반환합니다 (정상 = 0, 부목 없음)."""
     if os.getenv("GO1_HIDE_PRIVILEGED_INJURY", "0").strip().lower() in {"1", "true", "yes", "on"}:
-        return torch.ones((env.num_envs, 1), device=env.device)
+        return torch.zeros((env.num_envs, 1), device=env.device)
     if hasattr(env, "_peg_leg_foot_friction"):
         return env._peg_leg_foot_friction.unsqueeze(-1)
-    return torch.ones((env.num_envs, 1), device=env.device)
+    return torch.zeros((env.num_envs, 1), device=env.device)
 
 
 def peg_leg_splint_length(env: "ManagerBasedRLEnv") -> torch.Tensor:

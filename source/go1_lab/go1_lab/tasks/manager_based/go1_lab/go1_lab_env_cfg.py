@@ -56,8 +56,8 @@ class Go1LabPrivilegedObsCfg(ObsGroup):
     Phase 3 distillation 에서 Student LSTM 이 추정할 target:
     [0] 부상 상태 index: 0=정상, 1=FL, 2=FR, 3=RL, 4=RR
         (one-hot 모드에서는 [FL, FR, RL, RR, injured_flag] 5차원으로 대체)
-    [1] 부목 등가 길이 (m): Go1 역기구학 기반
-    [2] 발 마찰 계수
+    [1] 부목 등가 길이 (m): Go1 역기구학 기반. 정상 = 0 (부목 없음)
+    [2] 부목 발 마찰 계수. 정상 = 0 (부목 없음)
     """
 
     peg_leg_index = ObsTerm(func=mdp.peg_leg_index)
@@ -220,8 +220,8 @@ class Go1LabEnvCfg(UnitreeGo1RoughEnvCfg):
                     _mat.compliant_contact_damping = _ccd
 
         # 모든 Phase에서 privileged obs 등록 (Phase 1 → Phase 2 warm-start 호환성 보장)
-        # Phase 1(healthy)에서는 값이 [0, 0, 1.0] (정상, 부목 없음, 기본 마찰) 로 고정되어
-        # Teacher(Phase 2) 와 동일한 observation dim 을 유지합니다.
+        # Phase 1(healthy)에서는 값이 [0, 0, 0] (정상, 부목 없음 → 부목 속성 전부 0) 으로
+        # 고정되어 Teacher(Phase 2) 와 동일한 observation dim 을 유지합니다.
         if hasattr(self, "observations"):
             self.observations.privileged_obs = Go1LabPrivilegedObsCfg()
             # ONE-HOT injury encoding (GO1_INJURY_ONEHOT=1). A scalar index (0..4)

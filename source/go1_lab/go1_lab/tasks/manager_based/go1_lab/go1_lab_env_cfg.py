@@ -235,6 +235,20 @@ class Go1LabEnvCfg(UnitreeGo1RoughEnvCfg):
             if os.getenv("GO1_INJURY_ONEHOT", "0").strip().lower() in {"1", "true", "yes", "on"}:
                 self.observations.privileged_obs.peg_leg_index = ObsTerm(func=mdp.peg_leg_one_hot)
 
+            # ABSOLUTE calf angle in the POLICY group (GO1_ABS_JOINT_OBS=1).
+            # The standard joint_pos_rel subtracts default_joint_pos, which the
+            # peg-leg reset rewrites to the lock angle -> the splinted calf reads
+            # exactly 0 forever and the splint LENGTH becomes unobservable from
+            # proprioception (measured: student splint-length probe R^2 = 0.00,
+            # i.e. no better than predicting the mean). A real Go1 joint encoder
+            # reports the absolute angle and knows nothing about a post-injury
+            # "new default", so that cancellation is a sim artifact, not physics.
+            # This term subtracts the PRE-injury nominal instead, exposing
+            # (lock_angle - nominal): -0.66 rad at a 0.20 m splint, -0.08 rad at
+            # 0.30 m. Policy obs dim 48 -> 52, so every phase must be retrained.
+            if os.getenv("GO1_ABS_JOINT_OBS", "0").strip().lower() in {"1", "true", "yes", "on"}:
+                self.observations.policy.calf_pos_abs = ObsTerm(func=mdp.calf_pos_nominal_rel)
+
         # =================================================================
         # [NEW] 생물학적 무게 중심(CoM) 이동을 위한 Payload 추가
         # =================================================================
@@ -503,7 +517,13 @@ class Go1LabEnvCfg(UnitreeGo1RoughEnvCfg):
             min(foot_friction_min, foot_friction_max),
             max(foot_friction_min, foot_friction_max),
         )
-        target_leg = "random"
+        # 기본 "env_fixed": 조건(Normal/FL/FR/RL/RR)을 env id 에 고정해 조건별 학습
+        # 스텝 수를 정확히 균등하게 만듭니다. 예전 기본값 "random" 은 리셋마다 조건을
+        # 다시 뽑으므로, 학습량이 에피소드 길이에 비례해 빨리 넘어지는 조건일수록
+        # 데이터가 줄어드는 악순환이 생깁니다 (실측: FL 43스텝 / RL 779스텝 → 데이터
+        # 18배 차이 → 앞다리 조건 100% 조기종료). GO1_TARGET_LEG 로 되돌릴 수 있고,
+        # GO1_EVAL_MODE 가 설정되면 아래에서 평가용 배정이 우선합니다.
+        target_leg = os.getenv("GO1_TARGET_LEG", "env_fixed").strip().lower()
 
         # eval_mode 오버라이드 (평가 모드가 커리큘럼 설정보다 우선)
         if eval_mode == "normal":

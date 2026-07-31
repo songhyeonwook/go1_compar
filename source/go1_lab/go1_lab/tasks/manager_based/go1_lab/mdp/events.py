@@ -16,7 +16,10 @@
   관절을 "고정"하려면:
     (1) default_joint_pos를 lock angle로 설정 (action=0일 때 target=lock_angle이 되도록)
     (2) 매 스텝 action masking: 부상 calf joint의 action을 0으로 강제
-  이 두 가지를 함께 해야 합니다.
+    (3) 리셋 시 write_joint_state_to_sim 으로 실제 PhysX 관절 상태를 lock angle 에 배치
+  이 세 가지를 함께 해야 하며, 관절을 그 자세로 붙잡는 힘은 PD 액추에이터가 냅니다.
+  robot.data.joint_pos 에 직접 대입하면 안 됩니다 — 자세한 이유는
+  randomize_peg_leg_actuation / enforce_peg_leg_constraints 참고.
 """
 
 from __future__ import annotations
@@ -27,7 +30,6 @@ import torch
 from typing import TYPE_CHECKING
 
 from isaaclab.assets import Articulation
-from isaaclab.envs.mdp import events as mdp_events
 from isaaclab.managers import SceneEntityCfg
 
 if TYPE_CHECKING:
@@ -104,7 +106,8 @@ def apply_peg_leg_hip_torque_limit(
     """리셋 시 부상 다리 hip-joint effort_limit을 nominal의 일정 비율(기본 5%)로 낮춘다.
 
     healthy(leg_idx<0) 환경은 nominal로 복구한다. effort_limit는 actuator 버퍼이므로
-    다음 리셋까지 유지되며, ActuatorNetMLP가 매 substep 이 값으로 토크를 클리핑한다.
+    다음 리셋까지 유지되며, explicit actuator(실험 구성은 DCMotor)가 매 substep
+    _clip_effort 로 이 값을 적용한다.
     """
     scale = _peg_hip_torque_scale()
     _ensure_hip_effort_cache(env, robot)
@@ -176,6 +179,12 @@ def apply_peg_leg_calf_stiffness(
             try:
                 calf_idx = robot.data.joint_names.index(CALF_JOINT_NAMES[leg_idx])
             except ValueError:
+                _warn_once(
+                    env,
+                    f"stiffness_joint_{leg_idx}",
+                    f"'{CALF_JOINT_NAMES[leg_idx]}' 를 joint_names 에서 찾지 못해 부목 "
+                    f"무릎 강성이 적용되지 않습니다 (해당 다리는 nominal 강성 유지).",
+                )
                 continue
             if calf_idx < st.shape[1]:
                 sel = env_ids_t[mask]
@@ -204,6 +213,23 @@ def calf_angle_to_splint_length(calf_angle: torch.Tensor) -> torch.Tensor:
     l_t, l_c = GO1_THIGH_LENGTH, GO1_CALF_LENGTH
     l_sq = l_t**2 + l_c**2 + 2.0 * l_t * l_c * torch.cos(calf_angle)
     return torch.sqrt(torch.clamp(l_sq, min=1e-6))
+
+
+def _warn_once(env: "ManagerBasedRLEnv", key: str, msg: str) -> None:
+    """리셋마다 반복되는 경고를 조건당 한 번만 출력합니다.
+
+    이 파일의 실패는 대부분 '조용히 지나가면 로그가 오히려 멀쩡해 보이는' 종류입니다
+    (부상이 물리에 적용되지 않으면 보상과 에피소드 길이가 정상보다 좋아짐). 그래서
+    except 로 넘길지언정 침묵하지는 않습니다.
+    """
+    seen = getattr(env, "_peg_warned_keys", None)
+    if seen is None:
+        seen = set()
+        env._peg_warned_keys = seen
+    if key in seen:
+        return
+    seen.add(key)
+    print(f"[peg-leg] WARNING: {msg}", flush=True)
 
 
 def _resolve_env_ids(
@@ -241,7 +267,9 @@ def _ensure_peg_leg_buffers(env: "ManagerBasedRLEnv") -> None:
         env._peg_leg_default_joint_pos_ref = None
 
 
-# 내부 인덱스: 0=FL, 1=FR, 2=RL, 3=RR  (privileged obs에서는 +1 하여 1-4로 노출)
+# 내부 인덱스: 0=FL, 1=FR, 2=RL, 3=RR (정상 = -1).
+# privileged obs 로는 peg_leg_one_hot 이 [FL,FR,RL,RR,injured_flag] 5차원으로 노출합니다
+# (GO1_INJURY_ONEHOT=1, 학습 기본값).
 _TARGET_LEG_MAP: dict[str, int] = {"fl": 0, "fr": 1, "rl": 2, "rr": 3}
 
 
@@ -255,16 +283,54 @@ def _sample_peg_leg_indices(
 
     Args:
         prob_peg_leg: 부상 발생 확률 (0.0 ~ 1.0).
-        target_leg: "random" → reset마다 부상 다리를 stratified-random 균등 샘플,
+        target_leg: "env_fixed" → 조건을 env id 에 영구 고정 (env_id % 5).
+                        학습 스텝 수가 조건별로 정확히 균등해집니다 — 아래 설명 참고.
+                    "random" → reset마다 부상 다리를 stratified-random 균등 샘플,
                     "fl"/"fr"/"rl"/"rr" → 해당 다리 고정,
                     "normal" → 전부 정상(-1),
                     "balanced"/"balanced_random" → Normal/FL/FR/RL/RR 균등 샘플.
+
+    ⚠️ "균등 배정"과 "균등 학습량"은 다릅니다. random/balanced 는 리셋마다 조건을
+    다시 뽑으므로 배정 횟수는 균등하지만, PPO 는 각 env 에서 매 iteration 고정된
+    수의 스텝을 모으므로 실제 학습 데이터는 *에피소드 길이에 비례*합니다. 어떤
+    조건이 빨리 넘어지면 그 조건의 스텝 수가 줄고 → 학습이 덜 되고 → 더 빨리
+    넘어지는 악순환이 생깁니다 (실측: FL 43스텝 vs RL 779스텝 → 데이터 18배 차이,
+    앞다리 조건 사실상 전멸).
+
+    "env_fixed" 는 조건을 env id 에 묶어 이 되먹임을 끊습니다. 각 조건이 항상
+    num_envs/5 개의 env 를 점유하므로, 에피소드가 아무리 짧아도 iteration 당
+    스텝 수가 정확히 같습니다. 평지(GO1_FLAT_TERRAIN=1)에서는 env id 와 지형이
+    무관하므로 아래 "terrain shard 고착" 우려도 해당되지 않습니다.
     """
     n = env_ids.numel()
     mode = str(target_leg).strip().lower()
 
     if mode == "normal" or prob_peg_leg <= 0.0:
         return torch.full((n,), -1, device=env.device, dtype=torch.long)
+
+    # env-id 고정: 앞의 H 슬롯 = Normal, 뒤의 4 슬롯 = FL/FR/RL/RR (주기 H+4).
+    # 리셋해도 조건이 바뀌지 않으므로 조건별 학습 스텝 수가 구조적으로 균등합니다.
+    #
+    # H = GO1_ENV_FIXED_HEALTHY_SLOTS (기본 4 → 부상 50%).
+    #   H=4: 정상 50% / 각 다리 12.5%  ← 기본
+    #   H=1: 정상 20% / 각 다리 20%    (부상 80% — 너무 어려움, 아래 참고)
+    # 어떤 H 에서도 네 부상 조건의 env 수는 정확히 같으므로 균등 학습량은 유지됩니다.
+    #
+    # ⚠️ 이 모드는 prob_peg_leg 를 무시하므로 커리큘럼의 '부상 확률 램프' 가 작동하지
+    # 않습니다. H=1(부상 80%)로 돌렸을 때 정책이 iteration 6767 에서 에피소드 길이 674
+    # 로 정점을 찍은 뒤 800 iteration 만에 75 로 붕괴했습니다(종료 원인 55% 가
+    # bad_orientation — 단단한 의족을 달고 옆으로 넘어짐). 난이도 완충은 부목 길이
+    # 커리큘럼만으로는 부족하므로 H 로 부상 비율 자체를 낮춰 잡습니다.
+    if mode in {"env_fixed", "balanced_env"}:
+        try:
+            healthy_slots = max(1, int(os.getenv("GO1_ENV_FIXED_HEALTHY_SLOTS", "4")))
+        except ValueError:
+            healthy_slots = 4
+        period = healthy_slots + 4
+        g = (env_ids % period).to(torch.long)
+        return torch.where(
+            g < healthy_slots, torch.full_like(g, -1), g - healthy_slots
+        )
 
     # 특정 다리 고정 모드 (평가용)
     if mode in _TARGET_LEG_MAP:
@@ -275,9 +341,9 @@ def _sample_peg_leg_indices(
         active = torch.rand((n,), device=env.device) < float(prob_peg_leg)
         return torch.where(active, peg_indices, torch.full_like(peg_indices, -1))
 
-    # Balanced 모드: 1:1:1:1:1 (Normal, FL, FR, RL, RR) 균등 배정.
-    # 기존 env-id 고정 round-robin은 특정 leg condition이 특정 terrain/env shard와
-    # 반복적으로 묶일 수 있으므로, 기본은 무작위 permutation으로 둡니다.
+    # Balanced 모드: 리셋 배치 안에서 1:1:1:1:1 (Normal, FL, FR, RL, RR) 균등 배정을
+    # 무작위 permutation 으로 수행합니다. 평가용(GO1_EVAL_MODE=balanced)이며, 학습은
+    # 조건별 학습량까지 균등한 env_fixed 를 기본으로 씁니다.
     if mode in {"balanced", "balanced_random"}:
         repeats = int(math.ceil(n / 5))
         indices = torch.arange(5, device=env.device, dtype=torch.long).repeat(repeats)[:n]
@@ -358,6 +424,49 @@ def _get_peg_leg_per_env(
     return result
 
 
+def _foot_shape_spans(
+    env: "ManagerBasedRLEnv", robot: Articulation
+) -> dict[int, tuple[int, int] | None]:
+    """leg_idx → 그 발 body 가 차지하는 material shape 인덱스 구간 (최초 1회 캐싱).
+
+    get_material_properties() 는 (num_envs, num_shapes, 3) 이고 shape 는 body 순서로
+    나열되므로, body 별 shape 개수를 누적해 구간을 구합니다 (Isaac Lab 의
+    randomize_rigid_body_material 이 쓰는 것과 동일한 방식).
+    """
+    cached = getattr(env, "_peg_foot_shape_spans", None)
+    if cached is not None:
+        return cached
+
+    spans: dict[int, tuple[int, int] | None] = {i: None for i in range(4)}
+    try:
+        num_shapes_per_body = []
+        for link_path in robot.root_physx_view.link_paths[0]:
+            link_view = robot._physics_sim_view.create_rigid_body_view(link_path)
+            num_shapes_per_body.append(link_view.max_shapes)
+        if sum(num_shapes_per_body) != robot.root_physx_view.max_shapes:
+            raise ValueError(
+                f"shape-per-body 합계 {sum(num_shapes_per_body)} != "
+                f"max_shapes {robot.root_physx_view.max_shapes}"
+            )
+        body_names = list(robot.body_names)
+        for leg_idx, foot in enumerate(FOOT_BODY_NAMES):
+            # USD 에 따라 접미사가 붙을 수 있어 prefix 매칭 (기존 "FL_foot.*" 정규식과 동일 의도)
+            match = [b for b in body_names if b.startswith(foot)]
+            if not match:
+                continue
+            b_idx = body_names.index(match[0])
+            start = sum(num_shapes_per_body[:b_idx])
+            spans[leg_idx] = (start, start + num_shapes_per_body[b_idx])
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[peg-leg] WARNING: foot shape mapping failed ({type(exc).__name__}: {exc}); "
+            "GO1_INJURED_FOOT_FRICTION_ONLY will have no effect"
+        )
+
+    env._peg_foot_shape_spans = spans
+    return spans
+
+
 def _sample_splint_lengths(
     env: "ManagerBasedRLEnv", env_ids: torch.Tensor, length_range: tuple[float, float]
 ) -> torch.Tensor:
@@ -383,9 +492,10 @@ def randomize_peg_leg_actuation(
     (robot.data.joint_stiffness/damping)에 값을 써도 물리적 효과가 없습니다.
 
     대신 이 함수는:
-      (1) 부상 다리/부목 길이를 샘플링하여 메타데이터 버퍼에 저장
+      (1) 부상 다리/부목 길이/발 마찰을 샘플링하여 메타데이터 버퍼에 저장
       (2) default_joint_pos를 lock angle로 설정 (action=0 → target=lock_angle)
-      (3) joint_pos, joint_vel을 lock angle/0으로 초기화
+      (3) write_joint_state_to_sim 으로 부상 calf 를 실제 PhysX 상태에 배치
+      (4) hip effort_limit 약화 / calf 강성 / 발 마찰을 물리에 적용
 
     매 스텝 action masking은 Go1LabEnv.step()에서 수행합니다.
 
@@ -489,6 +599,17 @@ def randomize_peg_leg_actuation(
         try:
             joint_idx = robot.data.joint_names.index(joint_name)
         except ValueError:
+            # 여기서 조용히 넘어가면 최악입니다: 위에서 _peg_leg_index/splint_length/
+            # foot_friction 은 이미 '부상'으로 기록됐는데 calf 인덱스가 -1 로 남아
+            # lock 도 action masking 도 걸리지 않습니다. 즉 privileged obs 는 부상이라
+            # 말하고 물리는 멀쩡한 다리 → teacher 가 배울 것이 없어지는데도 보상과
+            # 에피소드 길이는 오히려 좋아져 로그만 보면 성공처럼 보입니다.
+            _warn_once(
+                env,
+                f"calf_index_{leg_idx}",
+                f"'{joint_name}' 를 joint_names 에서 찾지 못했습니다. 이 다리는 obs 상"
+                f" 부상으로 표시되지만 물리적으로는 고정되지 않습니다 (관측-물리 불일치).",
+            )
             continue
         env._peg_leg_calf_joint_index[env_id] = joint_idx
 
@@ -506,68 +627,98 @@ def randomize_peg_leg_actuation(
         ):
             robot.data.default_joint_pos[env_id, joint_idx] = target_lock_angle
 
-        # (2) 현재 joint position/velocity도 lock angle으로 초기화
-        if hasattr(robot.data, "joint_pos") and robot.data.joint_pos.ndim >= 2:
-            robot.data.joint_pos[env_id, joint_idx] = target_lock_angle
-        if hasattr(robot.data, "joint_vel") and robot.data.joint_vel.ndim >= 2:
-            robot.data.joint_vel[env_id, joint_idx] = 0.0
+        # (2) joint_pos_target 도 lock angle 로 (이건 평범한 쓰기 가능 필드입니다)
         if (
             hasattr(robot.data, "joint_pos_target")
             and robot.data.joint_pos_target.ndim >= 2
         ):
             robot.data.joint_pos_target[env_id, joint_idx] = target_lock_angle
 
-    # ━━━ 마찰 복원 (reset envs → nominal) : 
-    # effort_limit / calf stiffness 와 동일한 "복원 후 재적용" 패턴입니다. 
-    # (기본 whole-robot 모드에서는 로봇 전체가 영구히 미끄러움 → healthy 인데
-    # obs friction=0 과도 불일치). 매 리셋마다 리셋 대상 env 를 nominal 로 되돌린 뒤,
-    # 아래 루프가 부상 발에만 peg 마찰을 덮어씁니다.
+    # ━━━ 부상 calf 를 실제 PhysX 상태로 배치 (leg 별 배치 쓰기) ━━━
+    # ⚠️ robot.data.joint_pos 는 쓰기 가능한 버퍼가 아니라 PhysX 에서 읽어오는 지연
+    # 캐시입니다(articulation_data.py: timestamp < sim_timestamp 이면 get_dof_positions
+    # 로 덮어씀). 거기에 대입하면 시뮬레이터에 전달되지 않을 뿐 아니라, 액추에이터가
+    # 그 오염된 캐시로 PD 오차를 계산해 error_pos=0 → 토크 0 이 되어 부목이 오히려
+    # 완전히 늘어집니다. 반드시 write_joint_state_to_sim (내부적으로
+    # set_dof_positions 호출) 을 써야 합니다.
+    #
+    # 또한 상속된 reset_robot_joints 이벤트가 이 이벤트보다 먼저 실행되어 '이전'
+    # default_joint_pos 로 관절을 배치하므로, 새 lock angle 은 여기서 다시 써야 합니다.
+    for _leg in range(4):
+        _mask = sampled_leg_idx == _leg
+        if not _mask.any():
+            continue
+        try:
+            _j = robot.data.joint_names.index(CALF_JOINT_NAMES[_leg])
+        except ValueError:
+            _warn_once(
+                env,
+                f"place_joint_{_leg}",
+                f"'{CALF_JOINT_NAMES[_leg]}' 를 joint_names 에서 찾지 못해 부상 calf 를"
+                f" lock angle 로 배치하지 못했습니다 (부목 길이가 물리에 반영 안 됨).",
+            )
+            continue
+        _sel = env_ids_t[_mask]
+        _ang = sampled_lock_angles[_mask].to(robot.device).unsqueeze(-1)
+        robot.write_joint_state_to_sim(
+            position=_ang,
+            velocity=torch.zeros_like(_ang),
+            joint_ids=[_j],
+            env_ids=_sel,
+        )
+
+    # ━━━ 발 마찰: nominal 복원 후 부상 발에 peg 마찰 재적용 ━━━
+    # effort_limit / calf stiffness 와 동일한 "복원 후 재적용" 패턴이며, 한 번의
+    # PhysX 쓰기로 처리합니다. 매 리셋마다 리셋 대상 env 를 nominal(startup DR
+    # 결과 = healthy)로 되돌린 뒤, 부상 env 만 샘플된 마찰로 덮어씁니다.
+    #
+    # ⚠️ isaaclab.envs.mdp.events.randomize_rigid_body_material 을 함수처럼 부르면
+    # 안 됩니다 — 그것은 ManagerTermBase 를 상속한 CLASS 이고 __init__(cfg, env)
+    # 만 받으므로, 직접 호출하면 TypeError 가 나고 (예전 코드처럼 except 로
+    # 삼키면) 마찰이 조용히 미적용됩니다. root_physx_view 를 직접 쓰는 아래 방식이
+    # 버전 독립적입니다.
     try:
         _phys_view = robot.root_physx_view
-        _mats = _phys_view.get_material_properties()
+        _mats = _phys_view.get_material_properties()  # (num_envs, num_shapes, 3)
         if getattr(env, "_peg_nominal_material", None) is None:
             # 첫 리셋 시점의 material = startup DR 결과 = healthy nominal
             env._peg_nominal_material = _mats.clone()
         _ids = env_ids_t.to(_mats.device)
         _mats[_ids] = env._peg_nominal_material.to(_mats.device)[_ids]
-        _phys_view.set_material_properties(_mats, _ids)
-    except Exception:
-        # 백엔드/버전별 API 차이 시 기존 동작으로 폴백 (복원 미적용)
-        pass
 
-    # 마찰 랜덤화는 API 차이로 실패할 수 있으므로 try/except로 안전 처리
-    for local_i, env_id_t in enumerate(env_ids_t):
-        env_id = int(env_id_t.item())
-        leg_idx = int(sampled_leg_idx[local_i].item())
-        if leg_idx < 0:
-            continue
-        try:
-            # By default the friction is applied to the whole robot (all feet).
-            # GO1_INJURED_FOOT_FRICTION_ONLY=1 targets ONLY the injured foot, so a
-            # low value models a slippery splint sole / dragging toe (knuckling)
-            # that SKIMS without catching, while the healthy feet keep grip and can
-            # still propel. A global low value instead makes the whole robot
-            # slippery -> it can only stand (zero task), an artifact.
-            _fric_cfg = SceneEntityCfg(asset_cfg.name)
-            if os.getenv("GO1_INJURED_FOOT_FRICTION_ONLY", "0").strip().lower() in {"1", "true", "yes", "on"}:
-                _fric_cfg = SceneEntityCfg(asset_cfg.name, body_names=[f"{FOOT_BODY_NAMES[leg_idx]}.*"])
-            mdp_events.randomize_rigid_body_material(
-                env=env,
-                env_ids=torch.tensor([env_id], device=env.device, dtype=torch.long),
-                asset_cfg=_fric_cfg,
-                static_friction_range=(
-                    float(sampled_foot_friction[local_i].item()),
-                    float(sampled_foot_friction[local_i].item()),
-                ),
-                dynamic_friction_range=(
-                    float(sampled_foot_friction[local_i].item()),
-                    float(sampled_foot_friction[local_i].item()),
-                ),
-                restitution_range=(0.0, 0.0),
-            )
-        except Exception:
-            # 백엔드/버전별 시그니처 차이를 허용하고, privileged obs 용 샘플값만 유지
-            pass
+        _injured = sampled_leg_idx >= 0
+        if _injured.any():
+            _inj_ids = env_ids_t[_injured].to(_mats.device)
+            _inj_fric = sampled_foot_friction[_injured].to(_mats.device, _mats.dtype)
+            # 기본은 로봇 전체(모든 shape). GO1_INJURED_FOOT_FRICTION_ONLY=1 이면
+            # 부상 발 body 의 shape 구간에만 적용 — 낮은 값이 "미끄러운 부목 밑창/
+            # 끌리는 발끝"을 모델링하고 건강한 발은 접지력을 유지해 추진할 수 있게
+            # 합니다. 전체에 낮은 값을 주면 로봇이 통째로 미끄러워 서 있기만 하는
+            # artifact 가 됩니다.
+            _foot_only = os.getenv("GO1_INJURED_FOOT_FRICTION_ONLY", "0").strip().lower() in {
+                "1", "true", "yes", "on"
+            }
+            if _foot_only:
+                _spans = _foot_shape_spans(env, robot)
+                _inj_legs = sampled_leg_idx[_injured]
+                for _leg in range(4):
+                    _m = _inj_legs == _leg
+                    if not _m.any() or _spans.get(_leg) is None:
+                        continue
+                    _s, _e = _spans[_leg]
+                    _rows = _inj_ids[_m.to(_inj_ids.device)]
+                    _vals = _inj_fric[_m.to(_inj_fric.device)].unsqueeze(-1)
+                    _mats[_rows, _s:_e, 0] = _vals  # static
+                    _mats[_rows, _s:_e, 1] = _vals  # dynamic
+            else:
+                _mats[_inj_ids, :, 0] = _inj_fric.unsqueeze(-1)
+                _mats[_inj_ids, :, 1] = _inj_fric.unsqueeze(-1)
+
+        _phys_view.set_material_properties(_mats, _ids)
+    except Exception as exc:  
+        if not getattr(env, "_peg_friction_warned", False):
+            env._peg_friction_warned = True
+            print(f"[peg-leg] WARNING: foot friction not applied ({type(exc).__name__}: {exc})")
 
 
 def enforce_peg_leg_constraints(
@@ -575,7 +726,7 @@ def enforce_peg_leg_constraints(
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg,
 ):
-    """매 스텝 호출: 부상 다리의 action을 0으로 마스킹하고 joint_pos를 강제 고정합니다.
+    """매 스텝 호출: 부상 calf 의 action 을 0 으로, 목표각을 lock angle 로 유지합니다.
 
     ⚠️ 이 함수는 mode="interval"(interval_range_s 최소)로 등록되어 매 환경 스텝마다 호출됩니다.
 
@@ -589,12 +740,12 @@ def enforce_peg_leg_constraints(
       3. reward/termination 계산
       4. event_manager.apply(mode="interval")  ← 여기서 호출됨
 
-    interval 이벤트는 physics loop 이후에 실행되므로,
-    action masking만으로는 한 스텝 지연이 발생합니다.
-    따라서 joint_pos 직접 강제도 함께 수행하여 다음 스텝 시작 시 관절이 올바른 위치에 있도록 합니다.
+    interval 이벤트는 physics loop 이후에 돌므로 여기서의 action 쓰기는 다음 스텝의
+    last_action 관측에만 반영됩니다. 실제 마스킹은 physics loop 이전에 도는
+    Go1LabEnv.step() / PegLegActionMaskWrapper 가 담당합니다.
 
-    추가로, action_manager의 내부 action 버퍼를 직접 수정하여
-    다음 physics loop의 apply_action()에서 target이 lock_angle이 되도록 합니다.
+    관절을 lock angle 에 붙잡는 것은 PD 액추에이터의 몫이므로 여기서는 측정값
+    (joint_pos/joint_vel)을 건드리지 않습니다 — 그 이유는 아래 (2) 참고.
     """
     if not hasattr(env, "_peg_leg_index"):
         return
@@ -625,15 +776,22 @@ def enforce_peg_leg_constraints(
         if action_buf is not None and action_buf.ndim == 2:
             # 벡터화 인덱싱 (per-type calf 인덱스, 8~11 범위)
             action_buf[injured_env_ids, injured_calf_joints] = 0.0
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # 실제 마스킹은 physics loop 이전의 Go1LabEnv.step()/래퍼가 하므로 여기 실패는
+        # last_action 관측만 왜곡합니다. 그래도 침묵하지는 않습니다.
+        _warn_once(
+            env,
+            "action_buf_write",
+            f"last_action 관측용 action 마스킹 실패 ({type(exc).__name__}: {exc}).",
+        )
 
-    # ━━━ (2) Joint Position/Velocity Enforcement ━━━
-    # 물리 엔진이 관절을 살짝 움직였을 수 있으므로, 다음 스텝 시작 전에 강제 복귀
-    if hasattr(robot.data, "joint_pos") and robot.data.joint_pos.ndim >= 2:
-        robot.data.joint_pos[injured_env_ids, injured_calf_joints] = injured_lock_angles
-    if hasattr(robot.data, "joint_vel") and robot.data.joint_vel.ndim >= 2:
-        robot.data.joint_vel[injured_env_ids, injured_calf_joints] = 0.0
+    # ━━━ (2) Joint Target Enforcement ━━━
+    # ⚠️ 여기서 robot.data.joint_pos/joint_vel 에 lock angle 을 '강제 복귀'시키면
+    # 안 됩니다. 그것은 PhysX 읽기 캐시라 시뮬레이터에 전달되지 않으면서, 액추에이터가
+    # 그 값으로 PD 오차를 계산하게 만들어 error_pos = target - joint_pos = 0 →
+    # 부목 토크가 정확히 0 이 됩니다 (실측: 부상 calf 0.00 Nm, 정상 4.74 Nm; 실제
+    # 관절각이 목표에서 평균 0.81 rad 이탈). 관절을 붙잡는 것은 PD 자신의 일이므로,
+    # 목표각만 lock angle 로 유지하고 측정값은 건드리지 않습니다.
     if (
         hasattr(robot.data, "joint_pos_target")
         and robot.data.joint_pos_target.ndim >= 2
@@ -662,12 +820,14 @@ def peg_leg_curriculum(
 ) -> dict:
     """부상 난이도를 학습 진행에 따라 점진적으로 증가시키는 커리큘럼.
 
-    Phase 1: 부상 확률 10%→50% (iter 0→3000)
-      → 정책이 먼저 정상 보행을 유지하면서 소수의 부상 env에서 적응 시작
+    부상 확률 10%→50%, 부목 길이 0.30m→0.20m 로 서서히 어렵게 만듭니다.
+    처음엔 거의 정상 길이(0.31m)와 비슷한 0.30m 에서 시작해 점점 짧아집니다.
 
-    Phase 2: 부목 길이 0.30m→0.20m (iter 0→5000)
-      → 처음엔 거의 정상 길이(0.31m)와 비슷한 0.30m부터 시작
-      → 점점 짧아지면서 절뚝임이 더 필요한 시나리오로 전환
+    ⚠️ 램프 길이의 단위는 ITERATION 입니다. env.common_step_counter 는 정책 스텝을
+    세므로(1 iteration = num_steps_per_env 스텝, teacher 기준 24) 그대로 쓰면 램프가
+    24배 빨리 끝납니다 — 실제로 12000 iteration 학습에서 커리큘럼이 첫 208 iteration
+    만에 최대 난이도에 도달해 사실상 꺼져 있었습니다. GO1_CURRICULUM_STEPS_PER_ITER
+    로 환산합니다 (teacher 24, distillation 32; 값이 다르면 반드시 맞춰 주세요).
 
     Args:
         prob_start/prob_end: 부상 확률 시작/종료값
@@ -680,7 +840,8 @@ def peg_leg_curriculum(
     Returns:
         dict: TensorBoard에 로깅할 커리큘럼 상태
     """
-    step = env.common_step_counter
+    _spi = max(1, int(float(os.getenv("GO1_CURRICULUM_STEPS_PER_ITER", "24"))))
+    step = env.common_step_counter / _spi
 
     # ━━━ (1) 부상 확률 커리큘럼 ━━━
     prob_alpha = min(1.0, step / max(1, prob_ramp_steps))
@@ -701,8 +862,23 @@ def peg_leg_curriculum(
     env._curriculum_prob_peg_leg = cur_prob
     env._curriculum_splint_range = (cur_splint_lo, cur_splint_hi)
 
+    # TensorBoard 에는 '실제' 부상 비율을 보고합니다. env_fixed 모드는 prob_peg_leg 를
+    # 무시하고 조건을 env id 에 고정하므로, 램프 값을 그대로 로깅하면 실제 0.50 인데
+    # 0.13 으로 표시되는 식으로 어긋납니다.
+    if str(os.getenv("GO1_TARGET_LEG", "env_fixed")).strip().lower() in {
+        "env_fixed",
+        "balanced_env",
+    }:
+        try:
+            _h = max(1, int(os.getenv("GO1_ENV_FIXED_HEALTHY_SLOTS", "4")))
+        except ValueError:
+            _h = 4
+        reported_prob = 4.0 / (_h + 4)
+    else:
+        reported_prob = cur_prob
+
     return {
-        "prob_peg_leg": cur_prob,
+        "prob_peg_leg": reported_prob,
         "splint_hi": cur_splint_hi,
         "splint_lo": cur_splint_lo,
     }

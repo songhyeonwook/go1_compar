@@ -429,6 +429,8 @@ def main(
     contact_hist = []  # (steps, num_envs, 4)
     gt_index_hist = []  # (steps, num_envs)
     gt_splint_hist = []  # (steps, num_envs)
+    gt_fric_hist = []  # (steps, num_envs) 부목 발 마찰 (정상 = 0)
+    valid_hist = []  # (steps, num_envs) False = 리셋 프레임(힘/라벨 불일치) → 제외
     root_y_hist = []  # (steps, num_envs)
     foot_z_hist = []  # (steps, num_envs, 4) foot heights for gait-phase/diagonal-coupling
     base_pos_hist = []  # (steps, num_envs, 3) base xyz for CoM displacement
@@ -511,6 +513,27 @@ def main(
                 actions = policy(obs)
             ret = env.step(actions)
             obs = ret[0]
+            # ⚠️ 순환 정책(LSTM)의 hidden state 를 에피소드 경계에서 반드시 리셋합니다.
+            # rsl_rl 은 학습 중 매 스텝 policy.reset(dones) 를 호출하므로(ppo.py,
+            # distillation.py), 여기서 빼먹으면 이전 에피소드의 hidden state 가 그대로
+            # 넘어가 정책이 학습 때와 다른 분포에서 굴러갑니다 — Part 1 생체역학 수치
+            # 전체가 영향을 받고, 리셋 직후 프레임은 '이전 부상을 기억하는 state' 와
+            # '새 부상 라벨' 이 짝지어져 Part 2 probe 도 오염됩니다.
+            dones = ret[2] if len(ret) > 2 else None
+            if dones is not None:
+                try:
+                    runner.alg.policy.reset(dones)
+                except (AttributeError, TypeError):
+                    pass
+        # 리셋이 발생한 프레임은 (힘, 라벨) 짝이 어긋납니다: 접촉 센서는 리셋 직전
+        # (넘어지는 순간)의 힘을 들고 있는데 _peg_leg_index 는 이미 새로 샘플링된
+        # 뒤입니다. 부상 조건일수록 리셋이 잦아 오염이 조건과 상관되므로 제외합니다.
+        reset_frame = (
+            dones.detach().cpu().numpy().astype(bool)
+            if dones is not None
+            else np.zeros(env.num_envs, dtype=bool)
+        )
+        valid_hist.append(~reset_frame)
 
         forces = sensor.data.net_forces_w
         if args_cli.contact_use_z_only:
@@ -531,8 +554,14 @@ def main(
             if hasattr(base_env, "_peg_leg_splint_length")
             else torch.zeros(env.num_envs, device=env.device)
         )
+        gt_fric = (
+            base_env._peg_leg_foot_friction
+            if hasattr(base_env, "_peg_leg_foot_friction")
+            else torch.zeros(env.num_envs, device=env.device)
+        )
         gt_index_hist.append(gt_idx.cpu().numpy())
         gt_splint_hist.append(gt_spl.cpu().numpy())
+        gt_fric_hist.append(gt_fric.cpu().numpy())
         if robot is not None and hasattr(robot.data, "root_pos_w"):
             root_y_hist.append(robot.data.root_pos_w[:, 1].detach().cpu().numpy())
             base_pos_hist.append(robot.data.root_pos_w.detach().cpu().numpy())
@@ -572,6 +601,8 @@ def main(
     contact_hist = np.array(contact_hist)  # (S, E, 4)
     gt_index_hist = np.array(gt_index_hist)  # (S, E)
     gt_splint_hist = np.array(gt_splint_hist)  # (S, E)
+    gt_fric_hist = np.array(gt_fric_hist)  # (S, E)
+    valid_hist = np.array(valid_hist)  # (S, E) bool
     root_y_hist = np.array(root_y_hist)  # (S, E)
     torque_l2_hist = np.array(torque_l2_hist)  # (S, E)
     mech_power_abs_hist = np.array(mech_power_abs_hist)  # (S, E)
@@ -672,6 +703,15 @@ def main(
     flat_forces = contact_hist.reshape(-1, 4)  # (S*E, 4)
     flat_idx = gt_index_hist.reshape(-1)  # (S*E,) — 0=Normal,1=FL,2=FR,3=RL,4=RR
 
+    # 리셋 프레임은 접촉 힘이 '리셋 직전(넘어지는 순간)' 값인데 부상 라벨은 이미 새로
+    # 샘플링된 뒤라 (힘, 라벨) 짝이 어긋납니다. 부상 조건일수록 리셋이 잦아 오염이
+    # 조건과 상관되므로, 라벨을 -1 로 만들어 모든 조건 마스크에서 빠지게 합니다.
+    if valid_hist.size:
+        _n_dropped = int((~valid_hist).sum())
+        flat_idx = np.where(valid_hist.reshape(-1), flat_idx, -1)
+        gt_index_hist = np.where(valid_hist, gt_index_hist, -1)
+        print(f"[FILTER] 리셋 프레임 {_n_dropped} 개를 통계에서 제외했습니다.")
+
     force_stats = {}
     # df_stats is load-bearing duty, used for the main duty plot.
     df_stats = {}
@@ -755,17 +795,27 @@ def main(
             print(row_contact)
             print(row_load)
 
-    # Vertical impulse proxy: mean load magnitude multiplied by load-bearing
-    # duty. This is more defensible for antalgic gait than duty alone because
+    # Vertical impulse proxy = TIME-AVERAGED limb load (N), i.e. impulse per unit
+    # time. This is more defensible for antalgic gait than duty alone because
     # injured animals can reduce limb load while keeping or extending stance.
+    #
+    # ⚠️ force_stats is ALREADY the time average: `flat_forces[mask].mean(axis=0)`
+    # averages over every frame including swing (force ~ 0), so it equals
+    # stance_mean_force x duty. Sanity check: the Normal row sums to ~119 N across
+    # the four legs = Go1 body weight. Multiplying by duty a second time (the old
+    # code) squared the duty factor and inflated the reported reduction — measured
+    # 88-98% where the true value is 65-75%, which also let `paper_grade_candidate`
+    # pass on an artifact. For per-stride N.s, multiply by the measured stride
+    # period instead (stride period differs between healthy and antalgic gaits, so
+    # it cannot be folded in as a constant).
     impulse_proxy_stats = {}
     injured_impulse_reductions = {}
     if "Normal" in force_stats and "Normal" in df_stats:
         for key in force_stats:
             if key in df_stats:
-                impulse_proxy_stats[key] = force_stats[key] * df_stats[key]
+                impulse_proxy_stats[key] = force_stats[key]
 
-        print("\nVertical impulse proxy on injured leg (mean |Fz| x load duty)")
+        print("\nVertical impulse proxy on injured leg (time-averaged |Fz|, N)")
         for i in range(4):
             pkey = f"{LEG_NAMES[i]} Peg"
             if pkey not in impulse_proxy_stats:
@@ -927,8 +977,13 @@ def main(
         cond_contact_ctr = (
             contact_hist[:, :, ctr] > args_cli.load_contact_threshold
         ) & cond_mask_2d
-        df_aff = float(cond_contact_aff.mean())
-        df_ctr = float(cond_contact_ctr.mean())
+        # ⚠️ 분모는 '이 조건의 프레임 수' 여야 합니다. cond_contact_* 는 (S,E) 전체
+        # 크기의 bool 이므로 .mean() 을 쓰면 S*E 로 나뉘어 duty x P(조건) 이 됩니다 —
+        # 조건마다 표본 비율이 달라 값이 3~27배 축소되고 조건 간 비교도 불가능해집니다
+        # (예: FL 실제 0.362 가 0.0152 로 출력됨).
+        cond_frames = float(cond_mask_2d.sum())
+        df_aff = float(cond_contact_aff.sum()) / max(cond_frames, 1.0)
+        df_ctr = float(cond_contact_ctr.sum()) / max(cond_frames, 1.0)
 
         # Stance duration: stopwatch-style contiguous contact run (수정된 안전한 함수 사용)
         stance_runs = []
@@ -1020,14 +1075,34 @@ def main(
     print("Part 2: Student LSTM Injury Parameter Estimation")
     print("=" * 80)
 
+    print(
+        "주의: GO1_ABS_JOINT_OBS=1 이면 부목 각도가 policy 관측(calf_pos_abs)에 직접\n"
+        "      들어갑니다. 그 구성에서 2-A/2-B 는 '은닉 파라미터 추정' 이 아니라\n"
+        "      관측 채널의 선형 판독에 가깝습니다 — 해석 시 유의하세요."
+    )
+
     probe_results = {}
     if lstm_3d is not None:
         X = lstm_3d.reshape(-1, lstm_3d.shape[-1])  # (S*E, D)
         y_idx = gt_index_hist.reshape(-1).astype(int)  # (S*E,)
         y_spl = gt_splint_hist.reshape(-1)  # (S*E,)
+        y_fric = gt_fric_hist.reshape(-1)  # (S*E,)
+        # env id 를 샘플마다 기록해 두고 아래에서 env 단위로 train/test 를 나눕니다.
+        env_of_sample = np.broadcast_to(
+            np.arange(gt_index_hist.shape[1])[None, :], gt_index_hist.shape
+        ).reshape(-1)
 
-        valid = np.isfinite(X).all(axis=1) & np.isfinite(y_idx) & np.isfinite(y_spl)
-        X, y_idx, y_spl = X[valid], y_idx[valid], y_spl[valid]
+        valid = (
+            np.isfinite(X).all(axis=1)
+            & np.isfinite(y_idx)
+            & np.isfinite(y_spl)
+            & np.isfinite(y_fric)
+        )
+        # 리셋 프레임 제외 (hidden state 는 이전 에피소드, 라벨은 새 에피소드)
+        if valid_hist.size:
+            valid = valid & valid_hist.reshape(-1)
+        X, y_idx, y_spl, y_fric = X[valid], y_idx[valid], y_spl[valid], y_fric[valid]
+        env_of_sample = env_of_sample[valid]
 
         if args_cli.balance_conditions and len(X) > 0:
             rng = np.random.RandomState(1000)
@@ -1047,14 +1122,27 @@ def main(
                     X = X[balanced_indices]
                     y_idx = y_idx[balanced_indices]
                     y_spl = y_spl[balanced_indices]
+                    y_fric = y_fric[balanced_indices]
+                    env_of_sample = env_of_sample[balanced_indices]
                     print(
                         f"[BALANCE] Part2: using N={N} samples per present condition (after valid filter)"
                     )
 
         n = len(X)
-        split = int(n * 0.7)
-        perm = np.random.RandomState(42).permutation(n)
-        tr, te = perm[:split], perm[split:]
+        # ⚠️ train/test 는 반드시 ENV 단위로 나눕니다. 샘플은 50 Hz 연속 프레임이라
+        # 무작위 분할을 하면 20 ms 차이의 거의 동일한 프레임이 train 과 test 양쪽에
+        # 들어가 정확도가 과대평가됩니다(일반화 성능이 아니라 기억 성능 측정).
+        # env 를 통째로 hold-out 하면 test 궤적이 학습에 전혀 등장하지 않습니다.
+        _envs = np.unique(env_of_sample)
+        _perm_env = np.random.RandomState(42).permutation(_envs)
+        _n_te = max(1, int(round(len(_envs) * 0.3)))
+        _te_envs = set(_perm_env[:_n_te].tolist())
+        _te_mask = np.isin(env_of_sample, list(_te_envs))
+        tr, te = np.flatnonzero(~_te_mask), np.flatnonzero(_te_mask)
+        print(
+            f"  split: env 단위 hold-out — train {len(tr)} 샘플 / "
+            f"{len(_envs) - _n_te} envs, test {len(te)} 샘플 / {_n_te} envs"
+        )
 
         # ── 2-A: Injury Leg Classification (Logistic Regression) ──
         print("\n[2-A] Injury Leg Classification (0=Normal, 1=FL, 2=FR, 3=RL, 4=RR)")
@@ -1100,6 +1188,35 @@ def main(
             probe_results["spl_mae"] = mae
             probe_results["spl_pred"] = pred_spl
             probe_results["spl_true"] = true_spl
+        else:
+            print("  Insufficient injured samples -- skipping regression")
+
+        # ── 2-C: Foot Friction Regression (Linear Regression) ──
+        # Unlike splint length -- which the joint encoder exposes directly once
+        # GO1_ABS_JOINT_OBS=1 -- friction leaves a trace only through SLIP, and the
+        # antalgic gait deliberately off-loads the impaired foot. A low R² here is
+        # therefore a substantive result (severity is not proprioceptively legible),
+        # not a broken probe. Compare MAE against the predict-the-mean baseline
+        # printed alongside it: MAE ≈ baseline means no signal was recovered.
+        print("\n[2-C] Foot Friction Regression (unitless)")
+        if np.sum(injured_mask_tr) > 50 and np.sum(injured_mask_te) > 50:
+            regf = LinearRegression()
+            regf.fit(X[tr][injured_mask_tr], y_fric[tr][injured_mask_tr])
+            pred_fric = regf.predict(X[te][injured_mask_te])
+            true_fric = y_fric[te][injured_mask_te]
+            r2f = r2_score(true_fric, pred_fric)
+            maef = np.mean(np.abs(pred_fric - true_fric))
+            basef = np.mean(np.abs(true_fric - true_fric.mean()))
+            print(f"  R² score: {r2f:.4f}")
+            print(f"  MAE: {maef:.4f}  (predict-mean baseline: {basef:.4f})")
+            print(
+                f"  Friction range: {true_fric.min():.3f} ~ {true_fric.max():.3f}"
+            )
+            probe_results["fric_r2"] = r2f
+            probe_results["fric_mae"] = maef
+            probe_results["fric_baseline_mae"] = basef
+            probe_results["fric_pred"] = pred_fric
+            probe_results["fric_true"] = true_fric
         else:
             print("  Insufficient injured samples -- skipping regression")
     else:
@@ -1723,7 +1840,21 @@ def main(
         )
         metrics["lstm_splint_r2"] = float(probe_results["spl_r2"])
         metrics["lstm_splint_mae_m"] = float(probe_results["spl_mae"])
+    if "fric_r2" in probe_results:
+        print(
+            f"[LSTM Friction Estimation] R2={probe_results['fric_r2']:.3f}, "
+            f"MAE={probe_results['fric_mae']:.4f} "
+            f"(predict-mean baseline {probe_results['fric_baseline_mae']:.4f})"
+        )
+        metrics["lstm_friction_r2"] = float(probe_results["fric_r2"])
+        metrics["lstm_friction_mae"] = float(probe_results["fric_mae"])
+        metrics["lstm_friction_baseline_mae"] = float(
+            probe_results["fric_baseline_mae"]
+        )
     metrics_path = args_cli.metrics_json or os.path.join(save_dir, "student_analysis_metrics.json")
+    _metrics_dir = os.path.dirname(metrics_path)
+    if _metrics_dir:
+        os.makedirs(_metrics_dir, exist_ok=True)
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, sort_keys=True)
     print(f"[SAVED] {metrics_path}")

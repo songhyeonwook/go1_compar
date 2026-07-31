@@ -161,25 +161,24 @@ class Go1LabEnv(ManagerBasedRLEnv):
             robot.data.joint_pos_target[injured_envs, calf_joints] = lock_angles
 
     def _enforce_peg_leg_joint_state(self) -> None:
-        """physics step 후, joint_pos/vel을 lock angle/0으로 강제합니다.
+        """의도적으로 아무 것도 하지 않습니다 — 부목은 PD 액추에이터가 붙잡습니다.
 
-        ActuatorNetMLP는 완벽한 위치 추종을 보장하지 않으므로 (특히 외력이 작용할 때),
-        매 sub-step 후 관절 상태를 직접 강제하여 rigid lock을 시뮬레이션합니다.
+        예전에는 매 sub-step 후 robot.data.joint_pos/joint_vel 에 lock angle 을 대입해
+        rigid lock 을 '강제'했지만, 그것이 정확히 반대 효과를 냈습니다:
+
+          * robot.data.joint_pos 는 쓰기 가능한 버퍼가 아니라 PhysX 읽기 캐시라
+            (articulation_data.py) 대입해도 시뮬레이터에 전달되지 않습니다.
+            상태를 실제로 쓰려면 write_joint_state_to_sim → set_dof_positions 이 필요합니다.
+          * 게다가 액추에이터가 바로 그 캐시를 읽어 PD 오차를 계산하므로
+            (articulation.py: actuator.compute(joint_pos=self._data.joint_pos...)),
+            측정값을 목표값과 같게 스푸핑하면 error_pos = 0 → 토크 0 이 됩니다.
+
+        실측 결과 부상 calf 토크가 0.00 Nm (정상 다리 4.74 Nm) 였고, 실제 관절각이
+        목표 lock angle 에서 평균 0.81 rad 벗어나 무릎이 완전히 접혔습니다. 즉 관절을
+        고정하려던 코드가 고정하는 힘을 없애고 있었습니다.
+
+        올바른 경로: default_joint_pos = lock angle + action masking(=0) 이므로
+        target = lock angle 이고, PD 가 실제 오차를 보고 관절을 붙잡습니다. 리셋 시
+        초기 배치는 randomize_peg_leg_actuation 이 write_joint_state_to_sim 으로 합니다.
         """
-        if not hasattr(self, "_peg_leg_index"):
-            return
-
-        peg_idx = self._peg_leg_index
-        is_injured = peg_idx >= 0
-        if not is_injured.any():
-            return
-
-        robot = self.scene["robot"]
-        injured_envs = torch.where(is_injured)[0]
-        calf_joints = self._peg_leg_calf_joint_index[injured_envs]
-        lock_angles = self._peg_leg_calf_lock_angle[injured_envs]
-
-        if hasattr(robot.data, "joint_pos") and robot.data.joint_pos.ndim >= 2:
-            robot.data.joint_pos[injured_envs, calf_joints] = lock_angles
-        if hasattr(robot.data, "joint_vel") and robot.data.joint_vel.ndim >= 2:
-            robot.data.joint_vel[injured_envs, calf_joints] = 0.0
+        return

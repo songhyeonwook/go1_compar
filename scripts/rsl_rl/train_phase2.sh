@@ -127,14 +127,41 @@ export GO1_PROPRIO_ONLY="${GO1_PROPRIO_ONLY:-1}"
 export GO1_FLAT_TERRAIN="${GO1_FLAT_TERRAIN:-1}"
 export GO1_DOMAIN_RAND="${GO1_DOMAIN_RAND:-1}"
 export GO1_PHASE2_GAIT_TUNING="${GO1_PHASE2_GAIT_TUNING:-0}"
+export GO1_ABS_JOINT_OBS="${GO1_ABS_JOINT_OBS:-1}"
 
 # --- injury model (functional splint) + curriculum ---------------------------
 export GO1_PEG_WEAKEN_JOINTS="${GO1_PEG_WEAKEN_JOINTS:-hip}"
+# 조건(Normal/FL/FR/RL/RR)을 env id 에 고정해 조건별 학습 스텝 수를 균등하게 유지.
+# "random" 은 리셋마다 재추첨 -> 학습량이 에피소드 길이에 비례 -> 빨리 넘어지는
+# 조건일수록 데이터가 줄어드는 악순환 (실측 FL 43스텝 / RL 779스텝, 앞다리 전멸).
+export GO1_TARGET_LEG="${GO1_TARGET_LEG:-env_fixed}"
+# env_fixed 의 정상 슬롯 수. 주기 = 이 값 + 4(다리). 기본 4 -> 정상 50% / 각 다리 12.5%.
+# env_fixed 는 prob_peg_leg 를 무시해 '부상 확률 커리큘럼' 이 작동하지 않으므로, 초기
+# 난이도는 이 값으로 잡습니다. 1(부상 80%)로 두면 정책이 정점 후 붕괴했습니다.
+export GO1_ENV_FIXED_HEALTHY_SLOTS="${GO1_ENV_FIXED_HEALTHY_SLOTS:-4}"
+# 커리큘럼 램프는 ITERATION 단위인데 common_step_counter 는 정책 스텝을 셉니다.
+# num_steps_per_env 로 환산해야 램프가 의도대로 됩니다 (rsl_rl_ppo_cfg.py:
+# TeacherMlpRunnerCfg=24, DistillRunnerCfg=32).
+if [ "$IS_STUDENT" = "1" ]; then
+    export GO1_CURRICULUM_STEPS_PER_ITER="${GO1_CURRICULUM_STEPS_PER_ITER:-32}"
+else
+    export GO1_CURRICULUM_STEPS_PER_ITER="${GO1_CURRICULUM_STEPS_PER_ITER:-24}"
+fi
 export GO1_PROB_PEG_LEG="${GO1_PROB_PEG_LEG:-0.5}"
 export GO1_SPLINT_LENGTH_MIN="${GO1_SPLINT_LENGTH_MIN:-0.20}"
 export GO1_SPLINT_LENGTH_MAX="${GO1_SPLINT_LENGTH_MAX:-0.30}"
 export GO1_FOOT_FRICTION_MIN="${GO1_FOOT_FRICTION_MIN:-0.5}"
 export GO1_FOOT_FRICTION_MAX="${GO1_FOOT_FRICTION_MAX:-1.5}"
+
+export GO1_INJURED_FOOT_FRICTION_ONLY="${GO1_INJURED_FOOT_FRICTION_ONLY:-1}"
+# Splint knee PD gain. Measured (128 envs) corr(splint_length, ACTUAL PhysX angle):
+#   Kp=12 -> 0.48 (sag 0.52 rad, as large as the whole 0.585 rad length range:
+#                  the splint length barely reaches physics)
+#   Kp=40 -> 0.95   Kp=100 -> 0.99 (sag 0.06)   Kp=300 -> 0.999 (rigid)
+# 100 keeps a real splint's slight flex under load while making splint LENGTH a
+# faithful experimental variable. Training and eval MUST use the same value.
+export GO1_SPLINT_CALF_STIFFNESS="${GO1_SPLINT_CALF_STIFFNESS:-100}"
+export GO1_SPLINT_CALF_DAMPING="${GO1_SPLINT_CALF_DAMPING:-1.0}"
 export GO1_USE_PEG_LEG_CURRICULUM="${GO1_USE_PEG_LEG_CURRICULUM:-1}"
 export GO1_CURRICULUM_PROB_START="${GO1_CURRICULUM_PROB_START:-0.1}"
 export GO1_CURRICULUM_PROB_RAMP_STEPS="${GO1_CURRICULUM_PROB_RAMP_STEPS:-5000}"
@@ -206,6 +233,10 @@ echo "  symmetry_penalty=$GO1_SYMMETRY_PENALTY_WEIGHT"
 echo "  viability floor: force=$GO1_INJURED_FORCE_NONUSE_WEIGHT@${GO1_INJURED_MIN_FORCE_SEVERE_N}N duty=$GO1_INJURED_DUTY_NONUSE_WEIGHT@$GO1_INJURED_MIN_DUTY_SEVERE ramp=$GO1_INJURED_NONUSE_RAMP_STEPS ema=$GO1_INJURED_NONUSE_EMA_ALPHA"
 echo "  balance: flat_orientation=$GO1_FLAT_ORIENTATION_WEIGHT base_height=$GO1_BASE_HEIGHT_TARGET@$GO1_BASE_HEIGHT_WEIGHT"
 echo "  gait_tuning=$GO1_PHASE2_GAIT_TUNING"
+echo "  abs_joint_obs=$GO1_ABS_JOINT_OBS (1 -> policy obs 52) injured_foot_friction_only=$GO1_INJURED_FOOT_FRICTION_ONLY"
+echo "  splint knee: stiffness=$GO1_SPLINT_CALF_STIFFNESS damping=$GO1_SPLINT_CALF_DAMPING"
+echo "  target_leg=$GO1_TARGET_LEG (env_fixed -> 조건별 학습량 균등) healthy_slots=$GO1_ENV_FIXED_HEALTHY_SLOTS -> 부상 $(( 400 / (GO1_ENV_FIXED_HEALTHY_SLOTS + 4) ))%"
+echo "  curriculum_steps_per_iter=$GO1_CURRICULUM_STEPS_PER_ITER"
 echo "-----------------------------------------------"
 
 if [ "$IS_STUDENT" = "1" ]; then

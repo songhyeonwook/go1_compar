@@ -4,6 +4,8 @@ import os
 import torch
 from typing import TYPE_CHECKING
 
+from .events import CALF_JOINT_NAMES
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
@@ -45,3 +47,21 @@ def peg_leg_splint_length(env: "ManagerBasedRLEnv") -> torch.Tensor:
     if hasattr(env, "_peg_leg_splint_length"):
         return env._peg_leg_splint_length.unsqueeze(-1)
     return torch.zeros((env.num_envs, 1), device=env.device)
+
+
+def calf_pos_nominal_rel(env: "ManagerBasedRLEnv") -> torch.Tensor:
+  
+    asset = env.scene["robot"]
+    joint_names = list(asset.data.joint_names)
+    calf_ids = [joint_names.index(n) for n in CALF_JOINT_NAMES if n in joint_names]
+    if len(calf_ids) != len(CALF_JOINT_NAMES):
+        return torch.zeros((env.num_envs, len(CALF_JOINT_NAMES)), device=env.device)
+
+    nominal = getattr(env, "_peg_leg_default_joint_pos_ref", None)
+    if nominal is None:
+        # 첫 리셋 이전(= 아직 아무 관절도 lock 되지 않음)에는 현재 default 가 곧 nominal.
+        default = asset.data.default_joint_pos
+        nominal = default[0] if default.ndim == 2 else default
+    nominal = nominal.to(env.device)
+
+    return asset.data.joint_pos[:, calf_ids] - nominal[calf_ids].unsqueeze(0)

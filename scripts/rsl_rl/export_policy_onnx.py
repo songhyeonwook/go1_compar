@@ -85,10 +85,28 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env = PegLegActionMaskWrapper(env)
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
+    agent_cfg_dict = agent_cfg.to_dict()
+
+    # RSL-RL 3.0.1+ 버전 호환성을 위한 Patch (train.py/play.py와 동일해야 체크포인트가 로드됨)
+    # 1. policy 구성 요소에 class_name 주입
+    if "policy" in agent_cfg_dict:
+        policy_cfg = agent_cfg_dict["policy"]
+        for component in ["actor", "critic", "student", "teacher"]:
+            if component in policy_cfg and isinstance(policy_cfg[component], dict):
+                if "class_name" not in policy_cfg[component]:
+                    policy_cfg[component]["class_name"] = "MLP"
+
+    # 2. algorithm 설정에서 PPO 클래스가 지원하지 않는 키워드 제거
+    if "algorithm" in agent_cfg_dict:
+        alg_cfg = agent_cfg_dict["algorithm"]
+        for taboo_key in ["optimizer", "config_class", "share_cnn_encoders"]:
+            if taboo_key in alg_cfg:
+                alg_cfg.pop(taboo_key)
+
     if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        runner = OnPolicyRunner(env, agent_cfg_dict, log_dir=None, device=agent_cfg.device)
     elif agent_cfg.class_name == "DistillationRunner":
-        runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        runner = DistillationRunner(env, agent_cfg_dict, log_dir=None, device=agent_cfg.device)
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
 

@@ -431,6 +431,7 @@ def main(
     gt_splint_hist = []  # (steps, num_envs)
     gt_fric_hist = []  # (steps, num_envs) 부목 발 마찰 (정상 = 0)
     valid_hist = []  # (steps, num_envs) False = 리셋 프레임(힘/라벨 불일치) → 제외
+    age_hist = []  # (steps, num_envs) 리셋 후 경과 스텝 (hidden state 정착도)
     root_y_hist = []  # (steps, num_envs)
     foot_z_hist = []  # (steps, num_envs, 4) foot heights for gait-phase/diagonal-coupling
     base_pos_hist = []  # (steps, num_envs, 3) base xyz for CoM displacement
@@ -497,6 +498,9 @@ def main(
         _ks = {k: tuple(obs[k].shape) for k in obs.keys()} if hasattr(obs, "keys") else "tensor"
         print(f"[CANON-DEBUG] _canon={_canon} obs_type={type(obs).__name__} keys/shapes={_ks}", flush=True)
     for step in range(args_cli.steps):
+        # LSTM hidden state 는 '이번 스텝의 obs' 로 계산되므로, 그 obs 시점의
+        # 에피소드 경과 스텝을 env.step() 이전에 기록합니다 (Part 2 에서 사용).
+        age_hist.append(base_env.episode_length_buf.detach().cpu().numpy().copy())
         with torch.inference_mode():
             if _canon and hasattr(base_env, "_peg_leg_index"):
                 _pidx = base_env._peg_leg_index
@@ -603,6 +607,7 @@ def main(
     gt_splint_hist = np.array(gt_splint_hist)  # (S, E)
     gt_fric_hist = np.array(gt_fric_hist)  # (S, E)
     valid_hist = np.array(valid_hist)  # (S, E) bool
+    age_hist = np.array(age_hist)  # (S, E) 리셋 후 경과 스텝
     root_y_hist = np.array(root_y_hist)  # (S, E)
     torque_l2_hist = np.array(torque_l2_hist)  # (S, E)
     mech_power_abs_hist = np.array(mech_power_abs_hist)  # (S, E)
@@ -1091,6 +1096,9 @@ def main(
         env_of_sample = np.broadcast_to(
             np.arange(gt_index_hist.shape[1])[None, :], gt_index_hist.shape
         ).reshape(-1)
+        age_of_sample = (
+            age_hist.reshape(-1) if age_hist.size else np.zeros_like(y_idx)
+        )
 
         valid = (
             np.isfinite(X).all(axis=1)
@@ -1103,6 +1111,7 @@ def main(
             valid = valid & valid_hist.reshape(-1)
         X, y_idx, y_spl, y_fric = X[valid], y_idx[valid], y_spl[valid], y_fric[valid]
         env_of_sample = env_of_sample[valid]
+        age_of_sample = age_of_sample[valid]
 
         if args_cli.balance_conditions and len(X) > 0:
             rng = np.random.RandomState(1000)
@@ -1124,6 +1133,7 @@ def main(
                     y_spl = y_spl[balanced_indices]
                     y_fric = y_fric[balanced_indices]
                     env_of_sample = env_of_sample[balanced_indices]
+                    age_of_sample = age_of_sample[balanced_indices]
                     print(
                         f"[BALANCE] Part2: using N={N} samples per present condition (after valid filter)"
                     )
@@ -1167,6 +1177,57 @@ def main(
         probe_results["idx_pred"] = pred_idx
         probe_results["idx_true"] = y_idx[te]
 
+        # ── 시간 조건부 probe ────────────────────────────────────────────────
+        # ⚠️ LSTM hidden state 는 에피소드가 진행되며 누적되므로, 같은 부목 길이라도
+        # '리셋 후 경과 시간' 에 따라 다른 방향으로 인코딩됩니다. 전 구간을 하나의
+        # 선형 모델로 맞추면 여러 방향의 절충이 되어 어느 구간에서도 잘 맞지 않습니다
+        # (실측: 구간별 R^2 0.83~0.92 인데 전체 한 모델은 0.53 — Simpson's paradox).
+        # 따라서 구간별 R^2 를 함께 보고하고, 대표값은 hidden 이 정착한 구간에서 냅니다.
+        AGE_BINS = [(0, 10), (10, 25), (25, 50), (50, 100), (100, 200), (200, 500), (500, 10**9)]
+        # 대표값 구간. LSTM hidden 은 에피소드가 길어질수록 계속 누적되어 표현이
+        # 이동하므로 단조 증가가 아닙니다 — 실측 R^2 는 50~200 스텝에서 정점(부목
+        # 0.96 / 마찰 0.62)을 찍고 500+ 에서 0.57 / 0.27 로 다시 떨어집니다. 상한을
+        # 두지 않으면 그 하락 구간이 섞여 대표값이 과소평가됩니다.
+        SETTLED_MIN, SETTLED_MAX = 50, 200
+
+        def _probe_by_age(y, label, unit):
+            print(f"    {'경과 스텝':>12} {'R²':>8} {'MAE':>10} {'표본':>10}")
+            for lo, hi in AGE_BINS:
+                m_tr = (y_idx[tr] > 0) & (age_of_sample[tr] >= lo) & (age_of_sample[tr] < hi)
+                m_te = (y_idx[te] > 0) & (age_of_sample[te] >= lo) & (age_of_sample[te] < hi)
+                if m_tr.sum() < 200 or m_te.sum() < 200:
+                    continue
+                r = LinearRegression().fit(X[tr][m_tr], y[tr][m_tr])
+                p = r.predict(X[te][m_te])
+                lab = f"{lo}~{hi}" if hi < 10**9 else f"{lo}+"
+                print(
+                    f"    {lab:>12} {r2_score(y[te][m_te], p):>8.3f} "
+                    f"{np.mean(np.abs(p - y[te][m_te])):>10.4f}{unit} {int(m_te.sum()):>9}"
+                )
+
+        def _probe_settled(y):
+            m_tr = (
+                (y_idx[tr] > 0)
+                & (age_of_sample[tr] >= SETTLED_MIN)
+                & (age_of_sample[tr] < SETTLED_MAX)
+            )
+            m_te = (
+                (y_idx[te] > 0)
+                & (age_of_sample[te] >= SETTLED_MIN)
+                & (age_of_sample[te] < SETTLED_MAX)
+            )
+            if m_tr.sum() < 200 or m_te.sum() < 200:
+                return None
+            r = LinearRegression().fit(X[tr][m_tr], y[tr][m_tr])
+            p = r.predict(X[te][m_te])
+            t = y[te][m_te]
+            return (
+                r2_score(t, p),
+                float(np.mean(np.abs(p - t))),
+                float(np.mean(np.abs(t - t.mean()))),
+                int(m_te.sum()),
+            )
+
         # ── 2-B: Splint Length Regression (Linear Regression) ──
         print("\n[2-B] Splint Equivalent Length Regression (m)")
         injured_mask_tr = y_idx[tr] > 0
@@ -1188,6 +1249,16 @@ def main(
             probe_results["spl_mae"] = mae
             probe_results["spl_pred"] = pred_spl
             probe_results["spl_true"] = true_spl
+            print("  ── 리셋 후 경과 시간별 (구간마다 별도 선형 probe) ──")
+            _probe_by_age(y_spl, "splint", "m")
+            _st = _probe_settled(y_spl)
+            if _st:
+                print(
+                    f"  ▶ 대표 구간(리셋 후 {SETTLED_MIN}~{SETTLED_MAX} 스텝) R²={_st[0]:.4f} "
+                    f"MAE={_st[1]:.4f}m  (n={_st[3]})"
+                )
+                probe_results["spl_r2_settled"] = _st[0]
+                probe_results["spl_mae_settled"] = _st[1]
         else:
             print("  Insufficient injured samples -- skipping regression")
 
@@ -1217,6 +1288,17 @@ def main(
             probe_results["fric_baseline_mae"] = basef
             probe_results["fric_pred"] = pred_fric
             probe_results["fric_true"] = true_fric
+            print("  ── 리셋 후 경과 시간별 (구간마다 별도 선형 probe) ──")
+            _probe_by_age(y_fric, "friction", "")
+            _st = _probe_settled(y_fric)
+            if _st:
+                print(
+                    f"  ▶ 대표 구간(리셋 후 {SETTLED_MIN}~{SETTLED_MAX} 스텝) R²={_st[0]:.4f} "
+                    f"MAE={_st[1]:.4f}  (평균예측 베이스라인 {_st[2]:.4f}, n={_st[3]})"
+                )
+                probe_results["fric_r2_settled"] = _st[0]
+                probe_results["fric_mae_settled"] = _st[1]
+                probe_results["fric_baseline_mae_settled"] = _st[2]
         else:
             print("  Insufficient injured samples -- skipping regression")
     else:
@@ -1840,6 +1922,13 @@ def main(
         )
         metrics["lstm_splint_r2"] = float(probe_results["spl_r2"])
         metrics["lstm_splint_mae_m"] = float(probe_results["spl_mae"])
+    if "spl_r2_settled" in probe_results:
+        print(
+            f"[LSTM Splint Estimation, settled] R2={probe_results['spl_r2_settled']:.3f}, "
+            f"MAE={probe_results['spl_mae_settled']:.4f}m  <- 대표값"
+        )
+        metrics["lstm_splint_r2_settled"] = float(probe_results["spl_r2_settled"])
+        metrics["lstm_splint_mae_m_settled"] = float(probe_results["spl_mae_settled"])
     if "fric_r2" in probe_results:
         print(
             f"[LSTM Friction Estimation] R2={probe_results['fric_r2']:.3f}, "
@@ -1850,6 +1939,17 @@ def main(
         metrics["lstm_friction_mae"] = float(probe_results["fric_mae"])
         metrics["lstm_friction_baseline_mae"] = float(
             probe_results["fric_baseline_mae"]
+        )
+    if "fric_r2_settled" in probe_results:
+        print(
+            f"[LSTM Friction Estimation, settled] R2={probe_results['fric_r2_settled']:.3f}, "
+            f"MAE={probe_results['fric_mae_settled']:.4f} "
+            f"(baseline {probe_results['fric_baseline_mae_settled']:.4f})  <- 대표값"
+        )
+        metrics["lstm_friction_r2_settled"] = float(probe_results["fric_r2_settled"])
+        metrics["lstm_friction_mae_settled"] = float(probe_results["fric_mae_settled"])
+        metrics["lstm_friction_baseline_mae_settled"] = float(
+            probe_results["fric_baseline_mae_settled"]
         )
     metrics_path = args_cli.metrics_json or os.path.join(save_dir, "student_analysis_metrics.json")
     _metrics_dir = os.path.dirname(metrics_path)

@@ -158,15 +158,11 @@ class Go1LabEnvCfg(UnitreeGo1RoughEnvCfg):
         # 2. Scene & Observation
         # =================================================================
         if hasattr(self, "scene"):
-            # ⚠️ 주의: Healthy/Peg-leg 여부와 상관없이 무조건 False로 두어야 합니다.
-            # replicate_physics=True 로 설정할 경우, Isaac Sim PhysX 엔진에서 발바닥과 몸통의 
-            # 접촉(Contact) 센서(ContactSensor)를 초기화하지 못하고 튕기는 치명적 에러가 발생합니다.
             if hasattr(self.scene, "replicate_physics"):
                 self.scene.replicate_physics = False
             if hasattr(self.scene, "clone_in_fabric"):
                 self.scene.clone_in_fabric = False
 
-        # ⚠️ history_length 은 모든 Phase에서 1로 유지합니다.
         # Teacher(MLP) 는 privileged obs 를 직접 관측하므로 frame stacking 이
         # 불필요하고(RMA 구조), 시계열 메모리는 Phase 3 의 Student LSTM 담당입니다.
         # 특히 distillation 은 H=1 로 학습된 Teacher 체크포인트를 로드하므로,
@@ -265,8 +261,6 @@ class Go1LabEnvCfg(UnitreeGo1RoughEnvCfg):
                 self.events.add_base_mass = None
 
             # Go1 trunk 앞쪽에 얹은 payload를 등가적으로 모델링합니다.
-            # 기본값은 nominal Go1 기준 실험을 위해 비활성화합니다.
-            # 필요하면 환경변수로 실험별 조정:
             #   GO1_FRONT_PAYLOAD_KG=0.0  -> payload 비활성화
             #   GO1_FRONT_PAYLOAD_KG=2.0 GO1_FRONT_COM_X_M=0.05
             front_payload_kg = float(os.getenv("GO1_FRONT_PAYLOAD_KG", "0.0"))
@@ -772,7 +766,7 @@ class Go1LabEnvCfg(UnitreeGo1RoughEnvCfg):
         # =================================================================
         # 에너지 페널티를 50%만 완화하여 절뚝임을 위한 에너지 예산을 소폭 확보
         if hasattr(self.rewards, "track_lin_vel_xy_exp"):
-            self.rewards.track_lin_vel_xy_exp.weight = float(os.getenv("GO1_TRACK_LIN_VEL_WEIGHT", "2.5"))
+            self.rewards.track_lin_vel_xy_exp.weight = float(os.getenv("GO1_TRACK_LIN_VEL_WEIGHT", "6.0")) #2.5
         if hasattr(self.rewards, "dof_torques_l2"):
             _dt_abs = os.getenv("GO1_DOF_TORQUES_WEIGHT")
             if _dt_abs:

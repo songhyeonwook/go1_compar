@@ -4,12 +4,28 @@ import os
 import torch
 from typing import TYPE_CHECKING
 
+from isaaclab.envs.utils.io_descriptors import (
+    generic_io_descriptor,
+    record_dtype,
+    record_shape,
+)
+
 from .events import CALF_JOINT_NAMES
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
+# generic_io_descriptor: env.export_IO_descriptors() 가 각 obs 함수를
+# inspect=True 로 호출해 IO_descriptors.yaml 에 스펙(shape/dtype/units 등)을
+# 기록할 수 있게 합니다. 데코레이터가 없는 함수는 내보내기에서 조용히
+# 빠지므로, 이 파일의 모든 obs 함수는 반드시 데코레이터를 달아야 합니다.
 
+
+@generic_io_descriptor(
+    observation_type="PegLegPrivileged",
+    units="index",
+    on_inspect=[record_shape, record_dtype],
+)
 def peg_leg_index(env: "ManagerBasedRLEnv") -> torch.Tensor:
     """부상 상태 인덱스: 0=정상, 1=FL, 2=FR, 3=RL, 4=RR."""
     if os.getenv("GO1_HIDE_PRIVILEGED_INJURY", "0").strip().lower() in {"1", "true", "yes", "on"}:
@@ -19,6 +35,12 @@ def peg_leg_index(env: "ManagerBasedRLEnv") -> torch.Tensor:
     return torch.zeros((env.num_envs, 1), device=env.device)
 
 
+@generic_io_descriptor(
+    observation_type="PegLegPrivileged",
+    units="one_hot",
+    element_order=["FL", "FR", "RL", "RR", "injured_flag"],
+    on_inspect=[record_shape, record_dtype],
+)
 def peg_leg_one_hot(env: "ManagerBasedRLEnv") -> torch.Tensor:
     """고장 다리 one-hot (FL, FR, RL, RR)와 부상 플래그를 반환합니다."""
     one_hot = torch.zeros((env.num_envs, 5), device=env.device)
@@ -31,6 +53,11 @@ def peg_leg_one_hot(env: "ManagerBasedRLEnv") -> torch.Tensor:
     return one_hot
 
 
+@generic_io_descriptor(
+    observation_type="PegLegPrivileged",
+    units="dimensionless",
+    on_inspect=[record_shape, record_dtype],
+)
 def peg_leg_foot_friction(env: "ManagerBasedRLEnv") -> torch.Tensor:
     """고장 다리 부목 발 마찰 계수를 반환합니다 (정상 = 0, 부목 없음)."""
     if os.getenv("GO1_HIDE_PRIVILEGED_INJURY", "0").strip().lower() in {"1", "true", "yes", "on"}:
@@ -40,6 +67,11 @@ def peg_leg_foot_friction(env: "ManagerBasedRLEnv") -> torch.Tensor:
     return torch.zeros((env.num_envs, 1), device=env.device)
 
 
+@generic_io_descriptor(
+    observation_type="PegLegPrivileged",
+    units="m",
+    on_inspect=[record_shape, record_dtype],
+)
 def peg_leg_splint_length(env: "ManagerBasedRLEnv") -> torch.Tensor:
     """부목 등가 길이(m)를 반환합니다. Go1 링크 기구학 기반."""
     if os.getenv("GO1_HIDE_PRIVILEGED_INJURY", "0").strip().lower() in {"1", "true", "yes", "on"}:
@@ -49,8 +81,19 @@ def peg_leg_splint_length(env: "ManagerBasedRLEnv") -> torch.Tensor:
     return torch.zeros((env.num_envs, 1), device=env.device)
 
 
+@generic_io_descriptor(
+    observation_type="JointState",
+    units="rad",
+    joint_names=CALF_JOINT_NAMES,
+    on_inspect=[record_shape, record_dtype],
+)
 def calf_pos_nominal_rel(env: "ManagerBasedRLEnv") -> torch.Tensor:
-  
+    """calf 관절각 − 부상 전 nominal (FL, FR, RL, RR 순).
+
+    joint_pos_rel 과 달리 부상 시 재작성되는 default 가 아니라 부상 전
+    nominal 기준이므로, 부목 lock 각이 관측에서 소거되지 않습니다
+    (GO1_ABS_JOINT_OBS=1 로 policy 그룹에 추가됨).
+    """
     asset = env.scene["robot"]
     joint_names = list(asset.data.joint_names)
     calf_ids = [joint_names.index(n) for n in CALF_JOINT_NAMES if n in joint_names]

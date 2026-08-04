@@ -19,14 +19,13 @@ from .go1_lab_env_cfg import Go1LabEnvCfg
 class Go1LabEnv(ManagerBasedRLEnv):
     """Go1 Lab 환경 (ManagerBasedRLEnv 확장).
 
-    ⚠️ explicit actuator 호환을 위한 핵심 오버라이드:
-      Go1은 explicit actuator(기본 ActuatorNetMLP, GO1_PD_ACTUATOR=1이면 DCMotor PD)를
-      사용하므로 PhysX 게인(robot.data.joint_stiffness)으로는 관절을 고정할 수 없습니다.
-      
-      대신 step()을 오버라이드하여:
-        (1) process_action() 전에 부상 calf joint의 action을 0으로 마스킹
-        (2) physics sub-step마다 joint_pos/vel을 lock angle로 강제
-      이 두 가지를 통해 관절을 물리적으로 고정합니다.
+    step()을 오버라이드하여 부목(peg-leg) 고정을 구현합니다:
+      (1) process_action() 전에 부상 calf joint의 action을 0으로 마스킹
+          (last_action 관측 일관성 확보용 — 고정 자체는 (2)가 담당)
+      (2) 매 physics sub-step에서 apply_action() 직후 부상 calf의
+          joint_pos_target 을 lock angle 로 덮어쓰기 → PD 가 오차를 보고 붙잡음.
+    리셋 시 초기 배치는 randomize_peg_leg_actuation 이 write_joint_state_to_sim
+    으로 수행합니다.
     """
 
     cfg: Go1LabEnvCfg
@@ -60,8 +59,6 @@ class Go1LabEnv(ManagerBasedRLEnv):
                 self.sim.render()
             # update buffers at sim dt
             self.scene.update(dt=self.physics_dt)
-            # ⭐ physics 후에도 joint_pos/vel을 강제하여 다음 sub-step에서 올바른 상태로 시작
-            self._enforce_peg_leg_joint_state()
 
         # post-step: 나머지는 부모 클래스와 동일
         self.episode_length_buf += 1
@@ -110,8 +107,10 @@ class Go1LabEnv(ManagerBasedRLEnv):
     def _mask_peg_leg_action(self, action: torch.Tensor) -> torch.Tensor:
         """부상 calf joint의 action을 0으로 마스킹합니다.
 
-        action=0이면 target = default_pos + 0 * scale = lock_angle이 되어,
-        ActuatorNetMLP가 관절을 현재 위치(lock_angle)에 유지하는 토크를 출력합니다.
+        주 목적은 last_action 관측 일관성입니다 (고정 관절의 action 은 항상 0).
+        주의: action offset 은 액션 항 init 시 default_joint_pos 를 clone 한 값이라
+        action=0 이 lock 목표를 만들지는 않습니다 — 실제 고정은
+        _enforce_peg_leg_joint_targets 의 target 덮어쓰기 + PD 가 담당합니다.
         """
         if not hasattr(self, "_peg_leg_index"):
             return action
@@ -127,7 +126,7 @@ class Go1LabEnv(ManagerBasedRLEnv):
         # NOT per-leg, so the calf action index is NOT leg_idx*3+2 — that froze a
         # DIFFERENT leg's joint (e.g. an RL injury masked FL_calf, killing a front
         # leg → the robot could not walk). Use the real calf joint index (resolved
-        # by name in events.py), matching _enforce_peg_leg_joint_targets/_state.
+        # by name in events.py), matching _enforce_peg_leg_joint_targets.
         if hasattr(self, "_peg_leg_calf_joint_index"):
             calf_action_idx = self._peg_leg_calf_joint_index[injured_envs]
             valid = calf_action_idx >= 0
@@ -138,10 +137,13 @@ class Go1LabEnv(ManagerBasedRLEnv):
         return action
 
     def _enforce_peg_leg_joint_targets(self) -> None:
-        """apply_action() 후, write_data_to_sim() 전에 joint target을 강제합니다.
+        """apply_action() 후, write_data_to_sim() 전에 부상 calf 의 target 을 lock angle 로 강제합니다.
 
-        action masking으로 target ≈ lock_angle이지만,
-        혹시라도 action_manager가 다른 값을 설정했을 경우를 대비합니다.
+        이것이 부목 고정의 주 경로입니다: PD 가 target 오차를 보고 관절을 붙잡습니다.
+        ⚠️ 측정값(robot.data.joint_pos/joint_vel)에 대입하는 방식은 금지 — 그 버퍼는
+        PhysX 읽기 캐시라 sim 에 전달되지 않고, 액추에이터가 바로 그 캐시로 PD 오차를
+        계산하므로 스푸핑되어 홀딩 토크가 0 이 됩니다 (실측: 부상 calf 0.00 Nm vs
+        정상 4.74 Nm, 관절이 lock 에서 평균 0.81 rad 이탈해 무릎이 접혔음).
         """
         if not hasattr(self, "_peg_leg_index"):
             return
@@ -159,26 +161,3 @@ class Go1LabEnv(ManagerBasedRLEnv):
         # joint_pos_target을 lock angle로 강제
         if hasattr(robot.data, "joint_pos_target") and robot.data.joint_pos_target.ndim >= 2:
             robot.data.joint_pos_target[injured_envs, calf_joints] = lock_angles
-
-    def _enforce_peg_leg_joint_state(self) -> None:
-        """의도적으로 아무 것도 하지 않습니다 — 부목은 PD 액추에이터가 붙잡습니다.
-
-        예전에는 매 sub-step 후 robot.data.joint_pos/joint_vel 에 lock angle 을 대입해
-        rigid lock 을 '강제'했지만, 그것이 정확히 반대 효과를 냈습니다:
-
-          * robot.data.joint_pos 는 쓰기 가능한 버퍼가 아니라 PhysX 읽기 캐시라
-            (articulation_data.py) 대입해도 시뮬레이터에 전달되지 않습니다.
-            상태를 실제로 쓰려면 write_joint_state_to_sim → set_dof_positions 이 필요합니다.
-          * 게다가 액추에이터가 바로 그 캐시를 읽어 PD 오차를 계산하므로
-            (articulation.py: actuator.compute(joint_pos=self._data.joint_pos...)),
-            측정값을 목표값과 같게 스푸핑하면 error_pos = 0 → 토크 0 이 됩니다.
-
-        실측 결과 부상 calf 토크가 0.00 Nm (정상 다리 4.74 Nm) 였고, 실제 관절각이
-        목표 lock angle 에서 평균 0.81 rad 벗어나 무릎이 완전히 접혔습니다. 즉 관절을
-        고정하려던 코드가 고정하는 힘을 없애고 있었습니다.
-
-        올바른 경로: default_joint_pos = lock angle + action masking(=0) 이므로
-        target = lock angle 이고, PD 가 실제 오차를 보고 관절을 붙잡습니다. 리셋 시
-        초기 배치는 randomize_peg_leg_actuation 이 write_joint_state_to_sim 으로 합니다.
-        """
-        return

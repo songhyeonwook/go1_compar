@@ -153,10 +153,54 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     descriptor_path = export_dir / args_cli.descriptor_name
     descriptor_path.write_text(json.dumps(descriptor, indent=2) + "\n", encoding="utf-8")
 
+    io_desc_path = _export_io_descriptors(env, export_dir)
+
     print(f"[SAVED] {export_dir / args_cli.jit_name}")
     print(f"[SAVED] {export_dir / args_cli.onnx_name}")
     print(f"[SAVED] {descriptor_path}")
+    if io_desc_path is not None:
+        print(f"[SAVED] {io_desc_path}")
     env.close()
+
+
+def _export_io_descriptors(env, export_dir: Path) -> Path | None:
+    """Isaac Lab IO descriptor 를 IO_descriptors.yaml 로 내보냅니다.
+
+    env.export_IO_descriptors() 는 관측을 policy 그룹만 내보내는데, teacher
+    actor 는 privileged_obs 까지 연결해 받으므로 (agent.yaml obs_groups)
+    두 그룹을 모두 담아야 배포 측이 59차원 레이아웃을 재구성할 수 있습니다.
+    ObservationManager.get_IO_descriptors 는 그룹 인자를 받는 property 라
+    fget 으로 직접 호출합니다.
+
+    obs 함수가 inspect=True 를 지원하지 않으면 (generic_io_descriptor 미적용)
+    해당 term 은 YAML 에서 빠집니다 — go1_lab/mdp/observations.py 참고.
+    """
+    import yaml
+
+    try:
+        from isaaclab.envs.utils.io_descriptors import (
+            export_articulations_data,
+            export_scene_data,
+        )
+
+        base_env = env.unwrapped
+        om = base_env.observation_manager
+        obs_desc = type(om).get_IO_descriptors.fget(
+            om, ["policy", "privileged_obs"]
+        )
+        data = {
+            "observations": obs_desc,
+            "actions": base_env.action_manager.get_IO_descriptors,
+            "articulations": export_articulations_data(base_env),
+            "scene": export_scene_data(base_env),
+        }
+        path = export_dir / "IO_descriptors.yaml"
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+        return path
+    except Exception as exc:  # noqa: BLE001 — 내보내기 실패가 export 전체를 막으면 안 됨
+        print(f"[WARN] IO descriptor export failed: {type(exc).__name__}: {exc}")
+        return None
 
 
 if __name__ == "__main__":

@@ -315,12 +315,7 @@ def _sample_peg_leg_indices(
     #   H=4: 정상 50% / 각 다리 12.5%  ← 기본
     #   H=1: 정상 20% / 각 다리 20%    (부상 80% — 너무 어려움, 아래 참고)
     # 어떤 H 에서도 네 부상 조건의 env 수는 정확히 같으므로 균등 학습량은 유지됩니다.
-    #
-    # ⚠️ 이 모드는 prob_peg_leg 를 무시하므로 커리큘럼의 '부상 확률 램프' 가 작동하지
-    # 않습니다. H=1(부상 80%)로 돌렸을 때 정책이 iteration 6767 에서 에피소드 길이 674
-    # 로 정점을 찍은 뒤 800 iteration 만에 75 로 붕괴했습니다(종료 원인 55% 가
-    # bad_orientation — 단단한 의족을 달고 옆으로 넘어짐). 난이도 완충은 부목 길이
-    # 커리큘럼만으로는 부족하므로 H 로 부상 비율 자체를 낮춰 잡습니다.
+
     if mode in {"env_fixed", "balanced_env"}:
         try:
             healthy_slots = max(1, int(os.getenv("GO1_ENV_FIXED_HEALTHY_SLOTS", "4")))
@@ -488,26 +483,23 @@ def randomize_peg_leg_actuation(
 ):
     """의족 시나리오를 위한 리셋 이벤트 (explicit actuator 호환).
 
-    ⚠️ Go1은 explicit actuator를 사용하므로 PhysX 게인
-    (robot.data.joint_stiffness/damping)에 값을 써도 물리적 효과가 없습니다.
-
-    대신 이 함수는:
+    이 함수는:
       (1) 부상 다리/부목 길이/발 마찰을 샘플링하여 메타데이터 버퍼에 저장
-      (2) default_joint_pos를 lock angle로 설정 (action=0 → target=lock_angle)
+      (2) default_joint_pos 를 lock angle 로 재작성 — 관측용. joint_pos_rel 이
+          이 값을 live 로 빼므로 부상 calf 채널이 ≈0 이 되고, 그 소거 보상은
+          calf_pos_nominal_rel 이 담당합니다. action offset 은 액션 항 init 시
+          clone 된 값이라 이 재작성은 action 경로에는 영향이 없습니다.
       (3) write_joint_state_to_sim 으로 부상 calf 를 실제 PhysX 상태에 배치
       (4) hip effort_limit 약화 / calf 강성 / 발 마찰을 물리에 적용
 
-    매 스텝 action masking은 Go1LabEnv.step()에서 수행합니다.
-
-    ⭐ 커리큘럼 지원:
-      env._curriculum_prob_peg_leg (float) — 커리큘럼이 설정한 부상 확률 (우선 적용)
-      env._curriculum_splint_range (tuple) — 커리큘럼이 설정한 부목 길이 범위 (우선 적용)
+    관절을 실제로 붙잡는 것은 Go1LabEnv._enforce_peg_leg_joint_targets (매 sub-step
+    target 덮어쓰기) + PD 이고, 매 스텝 action masking 은 Go1LabEnv.step() 이 합니다.
     """
     robot: Articulation = env.scene[asset_cfg.name]
     env_ids_t = _resolve_env_ids(env, env_ids)
     _ensure_peg_leg_buffers(env)
 
-    # ⭐ 커리큘럼 파라미터 우선 적용
+    # 커리큘럼 파라미터 우선 적용
     cur_prob = getattr(env, "_curriculum_prob_peg_leg", None)
     cur_splint = getattr(env, "_curriculum_splint_range", None)
     effective_prob = float(cur_prob) if cur_prob is not None else prob_peg_leg
@@ -599,11 +591,6 @@ def randomize_peg_leg_actuation(
         try:
             joint_idx = robot.data.joint_names.index(joint_name)
         except ValueError:
-            # 여기서 조용히 넘어가면 최악입니다: 위에서 _peg_leg_index/splint_length/
-            # foot_friction 은 이미 '부상'으로 기록됐는데 calf 인덱스가 -1 로 남아
-            # lock 도 action masking 도 걸리지 않습니다. 즉 privileged obs 는 부상이라
-            # 말하고 물리는 멀쩡한 다리 → teacher 가 배울 것이 없어지는데도 보상과
-            # 에피소드 길이는 오히려 좋아져 로그만 보면 성공처럼 보입니다.
             _warn_once(
                 env,
                 f"calf_index_{leg_idx}",
@@ -618,9 +605,10 @@ def randomize_peg_leg_actuation(
 
         target_lock_angle = float(sampled_lock_angles[local_i].item())
 
-        # (1) default_joint_pos를 lock angle로 설정
-        #     → action=0일 때: target = default_pos + 0*scale = lock_angle
-        #     → actuator가 target ≈ current이면 토크 ≈ 0 → 관절 고정
+        # (1) default_joint_pos 를 lock angle 로 재작성 (관측용).
+        #     joint_pos_rel = joint_pos - default 이므로 부상 calf 채널이 ≈0 이 됨.
+        #     action offset 은 init 시 clone 이라 action 경로에는 영향 없음 —
+        #     실제 고정은 Go1LabEnv._enforce_peg_leg_joint_targets + PD.
         if (
             hasattr(robot.data, "default_joint_pos")
             and robot.data.default_joint_pos.ndim >= 2
@@ -635,15 +623,6 @@ def randomize_peg_leg_actuation(
             robot.data.joint_pos_target[env_id, joint_idx] = target_lock_angle
 
     # ━━━ 부상 calf 를 실제 PhysX 상태로 배치 (leg 별 배치 쓰기) ━━━
-    # ⚠️ robot.data.joint_pos 는 쓰기 가능한 버퍼가 아니라 PhysX 에서 읽어오는 지연
-    # 캐시입니다(articulation_data.py: timestamp < sim_timestamp 이면 get_dof_positions
-    # 로 덮어씀). 거기에 대입하면 시뮬레이터에 전달되지 않을 뿐 아니라, 액추에이터가
-    # 그 오염된 캐시로 PD 오차를 계산해 error_pos=0 → 토크 0 이 되어 부목이 오히려
-    # 완전히 늘어집니다. 반드시 write_joint_state_to_sim (내부적으로
-    # set_dof_positions 호출) 을 써야 합니다.
-    #
-    # 또한 상속된 reset_robot_joints 이벤트가 이 이벤트보다 먼저 실행되어 '이전'
-    # default_joint_pos 로 관절을 배치하므로, 새 lock angle 은 여기서 다시 써야 합니다.
     for _leg in range(4):
         _mask = sampled_leg_idx == _leg
         if not _mask.any():
@@ -671,12 +650,6 @@ def randomize_peg_leg_actuation(
     # effort_limit / calf stiffness 와 동일한 "복원 후 재적용" 패턴이며, 한 번의
     # PhysX 쓰기로 처리합니다. 매 리셋마다 리셋 대상 env 를 nominal(startup DR
     # 결과 = healthy)로 되돌린 뒤, 부상 env 만 샘플된 마찰로 덮어씁니다.
-    #
-    # ⚠️ isaaclab.envs.mdp.events.randomize_rigid_body_material 을 함수처럼 부르면
-    # 안 됩니다 — 그것은 ManagerTermBase 를 상속한 CLASS 이고 __init__(cfg, env)
-    # 만 받으므로, 직접 호출하면 TypeError 가 나고 (예전 코드처럼 except 로
-    # 삼키면) 마찰이 조용히 미적용됩니다. root_physx_view 를 직접 쓰는 아래 방식이
-    # 버전 독립적입니다.
     try:
         _phys_view = robot.root_physx_view
         _mats = _phys_view.get_material_properties()  # (num_envs, num_shapes, 3)
@@ -728,12 +701,10 @@ def enforce_peg_leg_constraints(
 ):
     """매 스텝 호출: 부상 calf 의 action 을 0 으로, 목표각을 lock angle 로 유지합니다.
 
-    ⚠️ 이 함수는 mode="interval"(interval_range_s 최소)로 등록되어 매 환경 스텝마다 호출됩니다.
-
     Isaac Lab의 step 흐름:
       1. action_manager.process_action(action)  ← action이 버퍼에 저장됨
       2. physics loop:
-         a. action_manager.apply_action()  ← target = default_pos + action * scale
+         a. action_manager.apply_action()  ← target = offset(init 시 default clone) + action*scale
          b. scene.write_data_to_sim()      ← PhysX에 기록
          c. sim.step()                     ← 물리 시뮬레이션
          d. scene.update()                 ← 센서 업데이트
@@ -766,10 +737,6 @@ def enforce_peg_leg_constraints(
 
     # ━━━ (1) Action Masking ━━━
     # action_manager의 내부 action 버퍼에서 부상 calf joint의 action을 0으로 강제.
-    # ⚠️ Go1 관절/action 순서는 per-TYPE(hip 4, thigh 4, calf 4)이므로 per-leg
-    # 공식 (leg*3+2) 은 calf 가 아닌 엉뚱한 healthy 관절을 가리킵니다 → 이름 기반으로
-    # 리졸브된 _peg_leg_calf_joint_index(위에서 injured_calf_joints 로 선택)를
-    # 그대로 사용합니다. 아래 (2) joint 고정부와 동일한 인덱스여야 일관됩니다.
     try:
         # action_manager.action은 process_action()에서 저장된 raw action
         action_buf = env.action_manager.action
@@ -786,12 +753,9 @@ def enforce_peg_leg_constraints(
         )
 
     # ━━━ (2) Joint Target Enforcement ━━━
-    # ⚠️ 여기서 robot.data.joint_pos/joint_vel 에 lock angle 을 '강제 복귀'시키면
-    # 안 됩니다. 그것은 PhysX 읽기 캐시라 시뮬레이터에 전달되지 않으면서, 액추에이터가
-    # 그 값으로 PD 오차를 계산하게 만들어 error_pos = target - joint_pos = 0 →
-    # 부목 토크가 정확히 0 이 됩니다 (실측: 부상 calf 0.00 Nm, 정상 4.74 Nm; 실제
-    # 관절각이 목표에서 평균 0.81 rad 이탈). 관절을 붙잡는 것은 PD 자신의 일이므로,
-    # 목표각만 lock angle 로 유지하고 측정값은 건드리지 않습니다.
+    # 목표각만 lock angle 로 유지합니다. ⚠️ 측정값(robot.data.joint_pos/joint_vel)에
+    # 대입 금지 — PhysX 읽기 캐시라 sim 에 안 써지고, 액추에이터가 그 캐시로 PD 오차를
+    # 계산하므로 스푸핑되어 홀딩 토크가 0 이 됩니다 (실측: 0.00 Nm vs 정상 4.74 Nm).
     if (
         hasattr(robot.data, "joint_pos_target")
         and robot.data.joint_pos_target.ndim >= 2
@@ -822,12 +786,6 @@ def peg_leg_curriculum(
 
     부상 확률 10%→50%, 부목 길이 0.30m→0.20m 로 서서히 어렵게 만듭니다.
     처음엔 거의 정상 길이(0.31m)와 비슷한 0.30m 에서 시작해 점점 짧아집니다.
-
-    ⚠️ 램프 길이의 단위는 ITERATION 입니다. env.common_step_counter 는 정책 스텝을
-    세므로(1 iteration = num_steps_per_env 스텝, teacher 기준 24) 그대로 쓰면 램프가
-    24배 빨리 끝납니다 — 실제로 12000 iteration 학습에서 커리큘럼이 첫 208 iteration
-    만에 최대 난이도에 도달해 사실상 꺼져 있었습니다. GO1_CURRICULUM_STEPS_PER_ITER
-    로 환산합니다 (teacher 24, distillation 32; 값이 다르면 반드시 맞춰 주세요).
 
     Args:
         prob_start/prob_end: 부상 확률 시작/종료값
